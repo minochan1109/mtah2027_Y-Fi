@@ -1,0 +1,9 @@
+data/
+cache/
+results/
+*.npz
+__pycache__/
+*.pyc
+.pytest_cache/
+external/
+*.png
