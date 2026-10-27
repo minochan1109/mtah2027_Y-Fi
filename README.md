@@ -29,6 +29,8 @@
 | `possession/postprocess.py` | 後処理 | ラベル化、ハーフ外は X、保持回数などの集計 |
 | `possession/pipeline.py` | 全体 | コマンドラインの入口 |
 | `tools/convert_metrica.py` | 検証 | Metrica の公開サンプル試合（他の試合・ラベル付き）を同じ形式に変換し、正解 `gt.csv` も作る |
+| `tools/overlay_video.py` | 確認 | 戦術カメラ映像に選手の枠・ボール・推定ラベル（外枠の色）を重ねた動画を作る |
+| `tools/compare_external.py` | 検証 | v1 / v2 / 設定ファイルごとに、他の試合の spellF1 を表にする |
 | `tools/plot_timeline.py` | 確認 | 指定した時間帯の推定結果・確率・疑似ラベルを図にする（映像と見比べる用） |
 | `tests/synthetic.py` | テスト | 本物と同じ形式の合成データを作る（実データなしで動作確認するため） |
 | `tests/test_smoke.py` | テスト | 合成データでパイプライン全体が動くかを確認 |
@@ -76,6 +78,30 @@ python ../more-than-a-hack-2027/evaluation/validate_submission.py results/team.c
 - 合成データ（実データと同じ 199,319 フレーム）では、全体で約3分でした。
 - パラメータは `--params my_params.json`（`config.Params` の項目名と値）で上書きできます。
 
+## バージョン2（試作）：ボールなしを基本にして、信頼できるボールを足す
+
+```bash
+python -m possession.v2.pipeline_v2 --repo ../more-than-a-hack-2027 --out results/v2.csv --report results/v2_report.txt --dump results/v2_detail.csv
+```
+
+| ファイル | 担当の目安 | 内容 |
+|---|---|---|
+| `possession/v2/clean_players.py` | [A] | 選手の誤検出の除去（ピッチ外・静止物）、キーパーのチームの修正、1チーム11人まで |
+| `possession/v2/ball_quality.py` | [B] | ボール検出の信頼度（0〜1）、飛び・孤立・静止の誤検出の除去、信頼できる検出の間だけ補間、浮き球の判定 |
+| `possession/v2/tag_policy.py` | [C] | タグの使い方の表（attack / defend / restart / goal / ignore と重み） |
+| `possession/v2/features_v2.py` ほか | [D] | 基本の特徴量（陣形・内包・自陣への戻り）＋ボールの追加特徴量、疑似ラベル、モデル |
+| `possession/v2/hmm_v2.py` | [E] | 切り替わりの兆候で切り替えコストを下げるビタビ |
+| `possession/v2/config_v2.py` | 全員 | 各ファイルの数値（自分の担当の節だけ変える） |
+
+良し悪しは他の試合で決める：
+
+```bash
+python tools/convert_metrica.py --src ../sample-data/data/Sample_Game_1 --out external/MET-G1F --stem MET-G1F --fake
+python tools/compare_external.py --repo ../more-than-a-hack-2027 --games external/MET-G1 external/MET-G2 external/MET-G1F external/MET-G2F
+```
+
+`--fake` は本番に似た誤り（静止した偽ボール、ボールの飛び、ゴールポストの静止物、キーパーのチームの入れ替わり）を人工的に入れる。
+
 ## 他の試合で点数を測る（ルール上、調整に使ってよい）
 
 ```bash
@@ -97,6 +123,16 @@ python tools/plot_timeline.py --detail results/detail.csv --start 12:30 --second
 ```
 
 横軸は映像の時刻（分:秒）なので、戦術カメラの映像を同じ時刻で開いて見比べられます。`--gt` は**他の試合の正解だけ**に使ってください。
+
+## 映像に重ねて見る
+
+```bash
+python tools/overlay_video.py --repo ../more-than-a-hack-2027 --detail results/v0_detail.csv --start 20:00 --seconds 60 --out results/review_2000.mp4
+```
+
+外枠の色＝推定（H 青・A オレンジ・D 灰・X 黒）、選手の枠＝ホーム青・アウェイ オレンジ（位置から作った目安の大きさ）、黄色の輪＝ボール。
+下の帯は前後10秒の推定。`--seconds 0` で最後まで（時間がかかる）。再生は VLC がおすすめ。
+見て分かった「傾向」や「バグ」を直すのはよいが、「この区間は本当は H」と記録して学習・評価・設定選びに使うのはルール違反。
 
 ## 実データが届いたら最初に確かめること
 

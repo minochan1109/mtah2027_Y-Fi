@@ -114,6 +114,66 @@ def degrade(px, py, bx, by, rng, ball_missing=0.4, far_m=40.0):
     return px, py, bx, by
 
 
+def add_fakes(px, py, bx, by, n_home, period, L, W, rng, n_static=30, n_spikes=300, n_swaps=20):
+    """Inject the kinds of errors seen in the challenge data, to test the clean-up modules.
+
+    ball : static false balls (spots / lines) filling missing stretches, and 1-2 frame spikes
+    players: a static object at a goal post (extra home slot), and goalkeeper episodes where the
+             keeper is tracked in a free slot of the OTHER team
+    Returns new arrays (players get one extra column, appended to the home team) and a report.
+    """
+    T = len(bx)
+    bx, by = bx.copy(), by.copy()
+    spots = [(11.0, W / 2), (L - 11.0, W / 2), (L / 2, W / 2), (L / 2, 0.0), (0.0, W / 2 + 9.0), (L, W / 2 - 9.0)]
+    n_sf = 0
+    for _ in range(n_static):
+        t0 = int(rng.integers(0, T - 300))
+        k = int(rng.uniform(3, 10) * FPS)
+        x, y = spots[int(rng.integers(len(spots)))]
+        seg = np.arange(t0, t0 + k)
+        seg = seg[np.isnan(bx[seg])]
+        bx[seg] = x + rng.normal(0, 0.05, len(seg))
+        by[seg] = y + rng.normal(0, 0.05, len(seg))
+        n_sf += len(seg)
+    det = np.flatnonzero(np.isfinite(bx))
+    for t in rng.choice(det, size=min(n_spikes, len(det)), replace=False):
+        ang, r = rng.uniform(0, 2 * np.pi), rng.uniform(10, 40)
+        for u in range(t, min(T, t + int(rng.integers(1, 3)))):
+            bx[u] = np.clip(bx[t] + r * np.cos(ang), 0, L)
+            by[u] = np.clip(by[t] + r * np.sin(ang), 0, W)
+    # static object at a goal post, present in random 60 s windows (about half the match)
+    post = np.full(T, np.nan)
+    for t0 in range(0, T, 60 * FPS):
+        if rng.random() < 0.5:
+            post[t0:t0 + 60 * FPS] = 1
+    gx, gy = np.where(post == 1, 0.3, np.nan), np.where(post == 1, W / 2 - 3.66, np.nan)
+    px = np.concatenate([px[:, :n_home], gx[:, None], px[:, n_home:]], axis=1)
+    py = np.concatenate([py[:, :n_home], gy[:, None], py[:, n_home:]], axis=1)
+    n_home += 1
+    # goalkeeper swaps
+    swaps = 0
+    first = period == period.min()
+    for team_cols, other_cols in ((range(0, n_home - 1), range(n_home, px.shape[1])),
+                                  (range(n_home, px.shape[1]), range(0, n_home - 1))):
+        cols = list(team_cols)
+        mx = np.array([np.nanmean(px[first, c]) if np.isfinite(px[first, c]).any() else np.nan for c in cols])
+        dist_goal = np.minimum(np.abs(mx), np.abs(L - mx))
+        keeper = cols[int(np.nanargmin(dist_goal))]
+        for _ in range(n_swaps // 2):
+            t0 = int(rng.integers(0, T - 600))
+            k = int(rng.uniform(5, 20) * FPS)
+            seg = slice(t0, t0 + k)
+            free = [c for c in other_cols if np.isnan(px[seg, c]).all()]
+            if not free:
+                continue
+            c = free[0]
+            px[seg, c], py[seg, c] = px[seg, keeper], py[seg, keeper]
+            px[seg, keeper] = py[seg, keeper] = np.nan
+            swaps += 1
+    return px, py, bx, by, n_home, {"static_ball_frames": n_sf, "spikes": n_spikes, "keeper_swaps": swaps,
+                                     "post_frames": int(np.isfinite(gx).sum())}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True, help="e.g. sample-data/data/Sample_Game_1")
@@ -124,6 +184,8 @@ def main(argv=None):
     ap.add_argument("--ball-missing", type=float, default=0.15,
                     help="EXTRA share of frames to hide the ball (the sample already misses ~39%%)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--fake", action="store_true",
+                    help="also inject false balls, ball spikes, a static object at a goal post and goalkeeper team swaps")
     a = ap.parse_args(argv)
 
     name = os.path.basename(os.path.normpath(a.src))
@@ -144,6 +206,12 @@ def main(argv=None):
     bx, by = ball[:, 0] * L, ball[:, 1] * W
     if not a.no_degrade:
         px, py, bx, by = degrade(px, py, bx, by, np.random.default_rng(a.seed), a.ball_missing)
+    n_home = len(home)
+    fake_rep = None
+    if a.fake:
+        px, py, bx, by, n_home, fake_rep = add_fakes(px, py, bx, by, n_home, period, L, W,
+                                                     np.random.default_rng(a.seed + 1))
+        names = list(home) + ["FakePost"] + list(away)
     sp = np.hypot(np.gradient(px, axis=0), np.gradient(py, axis=0)) * FPS
 
     os.makedirs(a.out, exist_ok=True)
@@ -152,7 +220,7 @@ def main(argv=None):
         fh.write('<?xml version="1.0"?>\n<Root><Teams><Team id="H"><Name>Home</Name></Team>'
                  '<Team id="A"><Name>Away</Name></Team></Teams><Players>')
         for i, nm in enumerate(names):
-            tid = "H" if i < len(home) else "A"
+            tid = "H" if i < n_home else "A"
             fh.write(f'<Player id="{tid}{nm}" teamId="{tid}"><Name>Track {i + 1}</Name></Player>')
         fh.write("</Players></Root>\n")
     with open(base + "_atd.txt", "w") as fh:
@@ -168,7 +236,7 @@ def main(argv=None):
         blocks.append([int(p), int(rows[0]), int(rows[-1])])
     with open(os.path.join(a.out, "game.json"), "w") as fh:
         json.dump({"stem": stem, "n_frames": n, "blocks": blocks, "pitch": [L, W],
-                   "source": "Metrica Sports sample-data " + name, "degraded": not a.no_degrade}, fh, indent=2)
+                   "source": "Metrica Sports sample-data " + name, "degraded": not a.no_degrade, "fakes": fake_rep}, fh, indent=2)
 
     gt = build_gt(events, period, frame, n)
     pd.DataFrame({"frame": np.arange(n), "label": gt}).to_csv(os.path.join(a.out, "gt.csv"), index=False)
