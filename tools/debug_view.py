@@ -17,6 +17,9 @@ Every tracking position is treated as the BOTTOM-CENTRE of its box (the point on
 The tracking has no box size, so the box is drawn with an approximate real size
 (player 0.9 m x 1.9 m, ball 0.5 m) converted to pixels with the homography at that spot.
 
+--v2 shows version 2 instead: removed players grey, team colours after the goalkeeper fix,
+ball trusted yellow / interpolated orange / rejected magenta (possession/v2/*).
+
 Ball gaps of up to --interp-max-s seconds (default 1.0) with a detection on both sides are filled
 by a straight line and drawn in orange. Longer gaps are left empty.
 
@@ -41,7 +44,7 @@ from tag_io import load_tags  # noqa: E402
 
 FPS = 25
 BLUE, RED = (230, 90, 20), (40, 40, 225)            # BGR
-YELLOW, ORANGE = (0, 230, 255), (0, 140, 255)
+YELLOW, ORANGE, MAGENTA = (0, 230, 255), (0, 140, 255), (200, 0, 200)
 LINE, GRASS = (235, 235, 235), (60, 110, 50)
 
 
@@ -273,6 +276,9 @@ def main(argv=None):
     ap.add_argument("--game", default="BAR-ATH")
     ap.add_argument("--data-dir")
     ap.add_argument("--cache-dir", default="cache")
+    ap.add_argument("--v2", action="store_true",
+                    help="show what version 2 does: removed players grey, corrected team colours, "
+                         "ball by trust (yellow trusted, orange interpolated, magenta rejected)")
     a = ap.parse_args(argv)
 
     repo = os.path.abspath(a.repo)
@@ -300,6 +306,25 @@ def main(argv=None):
           f"{ {k: side_of(k) for k in sorted({g['tags'].get('Team') for g in tags} - {None})} }", flush=True)
     max_gap = int(round(a.interp_max_s * FPS))
     bxi, byi, filled = interpolate_ball(tr.bx, tr.by, max_gap)
+    team_mat = np.repeat(tr.team[None, :].astype(np.int8), n, axis=0)
+    removed = np.zeros(tr.px.shape, bool)
+    rejected = np.zeros(n, bool)
+    if a.v2:
+        from possession import preprocess
+        from possession.v2.ball_quality import INTERP, REJECTED
+        from possession.v2.ball_quality import assess_ball
+        from possession.v2.clean_players import clean_players
+        from possession.v2.config_v2 import Params2
+        P2 = Params2()
+        P2.pitch_length, P2.pitch_width = L, W
+        attack = preprocess.attack_sign(tr, blocks, FPS)
+        cpx, cpy, team_mat, rep_a = clean_players(tr, attack, P2)
+        removed = np.isfinite(tr.px) & np.isnan(cpx)
+        bq, rep_b = assess_ball(tr.bx, tr.by, cpx, cpy, P2)
+        rejected = np.isfinite(tr.bx) & (bq["status"] == REJECTED)
+        bxi, byi = np.where(rejected, tr.bx, bq["bx"]), np.where(rejected, tr.by, bq["by"])
+        filled = bq["status"] == INTERP
+        print(f"v2 players: {rep_a}\nv2 ball: {rep_b}", flush=True)
 
     cap = cv2.VideoCapture(paths["video"])
     if not cap.isOpened():
@@ -322,6 +347,7 @@ def main(argv=None):
     out_h = vh + TAG_PANEL_H
     out = cv2.VideoWriter(a.out_video, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (out_w, out_h))
     home = tr.team == 0
+    team_now = lambda t, k: int(((team_mat[t] == k) & np.isfinite(tr.px[t]) & ~removed[t]).sum())  # noqa: E731
 
     t = f0
     while ok and t < f1:
@@ -332,25 +358,26 @@ def main(argv=None):
             x, y = tr.px[t, s], tr.py[t, s]
             if not np.isfinite(x):
                 continue
-            col = BLUE if home[s] else RED
+            col = GREY if removed[t, s] else (BLUE if team_mat[t, s] == 0 else RED)
             if H is not None:
                 box_on_ground(img, H, x, y, L, W, 0.9, 1.9, col, 3)
             cv2.circle(pitch, PP(x, y), 6, col, -1)
         # ball
         if np.isfinite(bxi[t]):
-            col = ORANGE if filled[t] else YELLOW
+            col = MAGENTA if rejected[t] else (ORANGE if filled[t] else YELLOW)
             if H is not None:
                 box_on_ground(img, H, bxi[t], byi[t], L, W, 0.5, 0.5, col, 3)
             cv2.circle(pitch, PP(bxi[t], byi[t]), 6, col, -1)
             cv2.circle(pitch, PP(bxi[t], byi[t]), 6, (0, 0, 0), 1)
-        state = "detected" if np.isfinite(tr.bx[t]) else ("interpolated" if filled[t] else "MISSING")
+        state = ("REJECTED" if rejected[t] else "detected" if np.isfinite(tr.bx[t])
+                 else ("interpolated" if filled[t] else "MISSING"))
         frame = cv2.resize(img, (vw, vh), interpolation=cv2.INTER_AREA)
         canvas = np.zeros((out_h, out_w, 3), np.uint8)
         canvas[:vh, :vw] = frame
         canvas[:vh, vw:vw + pitch.shape[1]] = pitch[:, : out_w - vw]
         canvas[vh:] = draw_tag_panel(out_w, t, tags, side_of)
         info = (f"{tstr(t)}  frame {t}  ball {state}  "
-                f"home {int(np.isfinite(tr.px[t, home]).sum())}  away {int(np.isfinite(tr.px[t, ~home]).sum())}")
+                f"home {team_now(t, 0)}  away {team_now(t, 1)}" + ("  [v2]" if a.v2 else ""))
         cv2.rectangle(canvas, (0, 0), (out_w, 30), (0, 0, 0), -1)
         cv2.putText(canvas, info, (10, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
         out.write(canvas)
