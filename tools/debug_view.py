@@ -9,7 +9,7 @@ Video (left)                       Pitch (right, does not overlap the video)
   ball detected yellow box           ball detected yellow dot
   ball interpolated orange box       ball interpolated orange dot
 
-Bottom panel: Smart Tagging. Tags active now are listed (code, team, time, other labels) and a
+Bottom panel: Smart Tagging. Tags active now are listed by their label text (e.g. Kick Off (Start)), with team, time and code and a
 +-15 s timeline shows each tag as a bar (blue = home team, red = away team, grey = no team),
 with a white line at "now". The text report also lists every tag with its video time.
 
@@ -36,6 +36,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 from possession import data  # noqa: E402
 from possession.config import Params  # noqa: E402
+sys.path.insert(0, HERE)
+from tag_io import load_tags  # noqa: E402
 
 FPS = 25
 BLUE, RED = (230, 90, 20), (40, 40, 225)            # BGR
@@ -120,11 +122,6 @@ def tag_colour(tag, side_of):
     return BLUE if side == 0 else (RED if side == 1 else GREY)
 
 
-def tag_extra(tag):
-    """Labels other than Team/Half as 'group=text' pairs."""
-    return ", ".join(f"{k}={v}" for k, v in tag["tags"].items() if k not in ("Team", "Half") and v)
-
-
 def draw_tag_panel(width, t, tags, side_of, window_s=15):
     panel = np.full((TAG_PANEL_H, width, 3), 25, np.uint8)
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -133,8 +130,7 @@ def draw_tag_panel(width, t, tags, side_of, window_s=15):
     cv2.putText(panel, f"SMART TAGGING  active now: {len(active)}", (10, 20), font, 0.55, (255, 255, 255), 1,
                 cv2.LINE_AA)
     for i, g in enumerate(active[:6]):
-        txt = (f"{g['code']}  [{g['tags'].get('Team', '-')}]  {tstr(g['start'])}-{tstr(g['end'])}"
-               + (f"  {tag_extra(g)}" if tag_extra(g) else ""))
+        txt = f"{g['name']}  [{g['tags'].get('Team', '-')}]  {tstr(g['start'])}-{tstr(g['end'])}  ({g['code']})"
         cv2.putText(panel, txt[:110], (10, 42 + 20 * i), font, 0.45, tag_colour(g, side_of), 1, cv2.LINE_AA)
     if len(active) > 6:
         cv2.putText(panel, f"... +{len(active) - 6} more", (10, 42 + 20 * 6), font, 0.45, GREY, 1, cv2.LINE_AA)
@@ -157,7 +153,7 @@ def draw_tag_panel(width, t, tags, side_of, window_s=15):
         y = y0 + r * row_h
         cv2.rectangle(panel, (X(g["start"]), y), (max(X(g["end"]), X(g["start"]) + 2), y + row_h - 4),
                       tag_colour(g, side_of), -1)
-        cv2.putText(panel, g["code"][:28], (X(g["start"]) + 3, y + row_h - 9), font, 0.38, (255, 255, 255), 1,
+        cv2.putText(panel, g["name"][:28], (X(g["start"]) + 3, y + row_h - 9), font, 0.38, (255, 255, 255), 1,
                     cv2.LINE_AA)
     cv2.line(panel, (X(t), y0 - 8), (X(t), y0 + n_rows * row_h), (255, 255, 255), 2)
     cv2.putText(panel, f"-{window_s}s", (x0, 20), font, 0.4, GREY, 1, cv2.LINE_AA)
@@ -174,12 +170,19 @@ def tag_report(add, tags, side_of, team_names):
     for c in sorted(codes, key=lambda c: -len(codes[c])):
         d = sum(g["end"] - g["start"] for g in codes[c]) / FPS
         add(f"    {c:<40} {len(codes[c]):5d}  total {d:8.1f} s")
-    add("  every tag (start frame, end frame, video time, length, code, team, other labels):")
+    names = {}
+    for g in tags:
+        names.setdefault(g["name"], []).append(g)
+    add("  count by label text:")
+    for c in sorted(names, key=lambda c: -len(names[c])):
+        d = sum(g["end"] - g["start"] for g in names[c]) / FPS
+        add(f"    {c:<40} {len(names[c]):5d}  total {d:8.1f} s")
+    add("  every tag (start frame, end frame, video time, length, label text, team, code):")
     for g in sorted(tags, key=lambda g: g["start"]):
         side = side_of(g["tags"].get("Team"))
         add(f"    {g['start']:6d}-{g['end']:6d}  {tstr(g['start'])}-{tstr(g['end'])}  "
-            f"{(g['end'] - g['start']) / FPS:6.2f} s  {g['code']:<36} "
-            f"{g['tags'].get('Team', '-')}({'-' if side is None else side})  {tag_extra(g)}")
+            f"{(g['end'] - g['start']) / FPS:6.2f} s  {g['name']:<36} "
+            f"{g['tags'].get('Team', '-')}({'-' if side is None else side})  {g['code']}")
     add("")
 
 
@@ -291,7 +294,7 @@ def main(argv=None):
     tr = data.load_tracking(paths["atd_meta"], paths["atd_raw"], n, (L, W),
                             cache=os.path.join(a.cache_dir, f"{a.game}_tracking.npz"))
     Hs, _, valid = data.load_homography(paths["homography"], n)
-    tags = data.load_smart_tagging(paths["smart_tagging"], FPS) if os.path.isfile(paths.get("smart_tagging", "")) else []
+    tags = load_tags(paths["smart_tagging"], FPS) if os.path.isfile(paths.get("smart_tagging", "")) else []
     side_of = lambda name: data.tag_team_side(name, tr.team_names)  # noqa: E731
     print(f"Smart Tagging: {len(tags)} tags; team mapping "
           f"{ {k: side_of(k) for k in sorted({g['tags'].get('Team') for g in tags} - {None})} }", flush=True)
