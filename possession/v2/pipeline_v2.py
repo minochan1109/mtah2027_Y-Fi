@@ -26,6 +26,15 @@ from .config_v2 import Params2
 REPORT = []
 
 
+def _external_gt(folder):
+    """Truth labels of an external game: game.json "gt" (make_eval_data.py) or gt.csv (convert_metrica.py)."""
+    try:
+        with open(os.path.join(folder, "game.json")) as fh:
+            return os.path.join(folder, json.load(fh).get("gt", "gt.csv"))
+    except OSError:
+        return os.path.join(folder, "gt.csv")
+
+
 def log(msg):
     line = time.strftime("%H:%M:%S") + " " + str(msg)
     print(line, flush=True)
@@ -46,7 +55,7 @@ def _paths(args, P):
     if args.external:
         with open(os.path.join(args.external, "game.json")) as fh:
             cfg = json.load(fh)
-        stem = os.path.join(args.external, cfg["stem"])
+        stem = os.path.join(args.external, cfg.get("input_dir", ""), cfg["stem"])
         paths = {"atd_meta": stem + "_atd.xml", "atd_raw": stem + "_atd.txt",
                  "homography": stem + "_homography.csv", "smart_tagging": stem + "_smart_tagging.xml"}
         P.pitch_length, P.pitch_width = cfg.get("pitch", (P.pitch_length, P.pitch_width))
@@ -140,9 +149,9 @@ def run(args):
         log(f"wrote {args.dump}")
 
     sys.path.insert(0, os.path.join(args.repo, "evaluation"))
-    if args.external and os.path.isfile(os.path.join(args.external, "gt.csv")):
+    if args.external and os.path.isfile(_external_gt(args.external)):
         import possession_metrics as pm  # noqa: E402
-        gt = pm.label_codes(pm.read_label_csv(os.path.join(args.external, "gt.csv")))
+        gt = pm.label_codes(pm.read_label_csv(_external_gt(args.external)))
         res = pm.evaluate(gt, pm.label_codes(labels))
         log("EXTERNAL GAME score (allowed for tuning): macroF1={:.4f} spellF1={:.4f} possessions={}".format(
             res["macro_f1"], res["spell_f1_mean"], res["n_pred_spells"]))

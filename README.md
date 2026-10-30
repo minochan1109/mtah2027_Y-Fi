@@ -102,7 +102,31 @@ python tools/compare_external.py --repo ../more-than-a-hack-2027 --games externa
 
 `--fake` は本番に似た誤り（静止した偽ボール、ボールの飛び、ゴールポストの静止物、キーパーのチームの入れ替わり）を人工的に入れる。
 
-## 他の試合で点数を測る（ルール上、調整に使ってよい）
+## 評価用データを作る（他の試合。ルール上、調整に使ってよい）
+
+Metrica の公開サンプル試合から、「本番に似せた使用データ」と「正解データ」を作る。
+
+```bash
+git clone https://github.com/metrica-sports/sample-data.git ../sample-data
+python tools/make_eval_data.py --src ../sample-data/data/Sample_Game_1 --out external/EVAL-G1
+python tools/make_eval_data.py --src ../sample-data/data/Sample_Game_2 --out external/EVAL-G2 --seed 1
+```
+
+| フォルダ | 中身 |
+|---|---|
+| `input/`（使用データ） | 全フレームの 41% でボール欠損、残りの検出の約 10% を誤検出に置き換え。選手もカメラの範囲外を欠損させ、検出の約 10% を誤り（チームの入れ替わり・キーパーの入れ替わり・静止物）にしたもの。タグは使用データからタグ付けルールで作ったもの |
+| `truth/`（正解データ） | 本物の選手・ボール（`_atd`、`ball.csv`）、保持の正解（`gt.csv`）、同じタグ付けルールを正解データに当てたタグ、入れた誤りの記録（`errors.npz`） |
+
+割合は `--ball-missing`・`--ball-false`・`--player-false` で変えられる。
+
+```bash
+# 推定全体（spellF1）
+python tools/compare_external.py --repo ../more-than-a-hack-2027 --games external/EVAL-G1 external/EVAL-G2
+# 選手の掃除とボールの判定だけ（再現率・除去率など）
+python tools/eval_cleaning.py --games external/EVAL-G1 external/EVAL-G2 --params params/my_try.json
+```
+
+## 他の試合で点数を測る（旧：convert_metrica.py）
 
 ```bash
 git clone https://github.com/metrica-sports/sample-data.git ../sample-data
