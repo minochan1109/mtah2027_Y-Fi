@@ -136,6 +136,15 @@ def run(args):
     summ = postprocess.summary(labels, blocks, P.fps)
     log("summary: " + json.dumps({k: round(v, 3) if isinstance(v, float) else v for k, v in summ.items()}))
 
+    if args.dead_debug:
+        from . import dead_debug
+        gt_arr = None
+        if args.external and os.path.isfile(_external_gt(args.external)):
+            gt_arr = pd.read_csv(_external_gt(args.external))["label"].astype(str).to_numpy()
+        os.makedirs(os.path.dirname(os.path.abspath(args.dead_debug)) or ".", exist_ok=True)
+        dead_debug.explain(fd, dm, P, control, y_dead, p_dead, labels, blocks, args.dead_debug, gt=gt_arr, fps=P.fps)
+        log(f"wrote {args.dead_debug}_frames.csv and {args.dead_debug}_stretches.txt")
+
     if args.dump:
         t = np.arange(n) / P.fps
         pd.DataFrame({"frame": np.arange(n),
@@ -183,6 +192,7 @@ def main(argv=None):
     ap.add_argument("--params", help="JSON overriding Params2 fields")
     ap.add_argument("--report", help="text file with what every module did")
     ap.add_argument("--dump", help="per-frame CSV for the debug tools")
+    ap.add_argument("--dead-debug", help="prefix for the D debug files (why each frame / stretch is D)")
     ap.add_argument("--external", help="another game converted with tools/convert_metrica.py")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--gt")

@@ -43,10 +43,19 @@ class DeadModel:
     def predict(self, X):
         return self.model.predict_proba(X[self.cols].values)[:, 1]
 
+    def feature_names(self):
+        """Names in the order the logistic regression sees them. The imputer drops columns that are
+        empty in the training data (e.g. camera features when there is no homography), so those are
+        skipped here too, then the 'missing_' indicator columns follow."""
+        imp = self.model[0]
+        cols = np.array(self.cols)
+        kept = cols[~np.isnan(imp.statistics_)]
+        miss = [f"missing_{c}" for c in cols[imp.indicator_.features_]] if imp.indicator_ is not None else []
+        return [str(c) for c in kept] + miss
+
     def coefficients(self):
         lr = self.model[-1]
-        names = self.cols + [f"missing_{c}" for c in np.array(self.cols)[self.model[0].indicator_.features_]]
-        return sorted(zip(names, lr.coef_[0]), key=lambda t: -abs(t[1]))
+        return sorted(zip(self.feature_names(), lr.coef_[0]), key=lambda t: -abs(t[1]))
 
 
 # --------------------------------------------------------------------------- modules 2 and 3
