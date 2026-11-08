@@ -1,0 +1,179 @@
+# Hybrid D detector (MT-11, 11/4): core from the CURRENT D model, start / end from the situation signs,
+# then the 3-second rule.  possession/v2/dead_situation.py detect_hybrid, run by tools/dead_situations.py.
+# Lines:   sign / event / back_to / confirm / end / require / must  =  日本語 | English | expression   ('#' = comment)
+#   require: if it fails, the stretch is NOT this situation (the next situation is tried)
+#   must   : if it fails, the stretch is NOT A STOPPAGE at all
+# Ball: POSITION ONLY (ball_out, ball_out_side, ball_out_goal, ball_corner, ball_centre, ball_6yd,
+#       n_approach_ball, ball_fresh, keeper_ball);
+#       how the ball moves is never used. p_dead = P(dead) of the current D model (run pipeline_v2 with
+#       --params {"dead_ball_motion": false} so that model does not use ball motion either).
+
+[settings]
+need = 2                  # 確認・終了サインは5つのうちいくつ / of the 5 confirm / end signs
+core_need = 1             # 芯のサインはいくつ満たせばよいか / how many core signs must hold
+core_min_s = 2            # 芯はこれ以上続くこと / the core must last this long
+core_merge_s = 1          # 芯の間のすき間がこれ未満ならつなぐ / join cores closer than this
+classify_s = 6            # 状況を決めるために見る最短の時間 / at least this long is used to decide the situation
+classify_min = 0.25       # これ未満なら「不明」/ below this share the situation is "unknown"
+start_search_s = 10       # 芯の前、始まりを探す範囲 / look for the start this far before the core
+end_search_before_s = 1   # 芯の終わりの何秒前から終わりを探すか / look for the end from this long before the core end ...
+end_search_after_s = 1    # 芯の終わりの何秒後まで探すか（なければ芯の終わり）/ ... to this long after it (else: core end)
+end_hold_s = 0.3          # 終了サインが続く時間 / end signs must hold this long
+end_back_s = 0.5          # D の終わりをこれだけ前にずらす / the D ends this much earlier
+min_d_s = 3               # 3秒ルール: これ未満の停止はプレー中に戻す / shorter D -> play
+min_play_s = 3            # 3秒ルール: これ未満のプレー中は停止につなぐ / shorter play -> joined to D
+require_share = 0.5       # require / must: この割合以上で成り立てばよい / must hold in this share ...
+require_last_s = 3        # ... 区間の最後（再開の直前）のこの秒数で見る / ... of the last seconds before the restart
+merge_max_gap_s = 30      # 前の停止との間にはっきりしたプレーがなければ1つの停止にする（この秒数まで）/ join two stoppages
+kickoff_from_tags = 1     # 1: 前後半の始まり〜キックオフ、ゴール〜キックオフを必ず停止にする / special kick-off stretches
+kickoff_wrong_max = 2     # キックオフの形: 相手陣地に入っている選手が各チームこの人数以下 / kick-off shape: at most this many in the other half
+kickoff_shape_s = 1       # その形が続く時間。形が崩れた（ハーフラインを越えた）瞬間をキックとする / the kick = when the shape breaks
+kickoff_after_tag_s = 10  # キックオフのタグの終わりからこの秒数まで探す / look this long after the kick-off tag
+kickoff_after_s = 3       # 終了サインが見つからなければ、キックオフのタグの終わりのこの秒数前を蹴った瞬間とする
+kickoff_max_wait_s = 240  # これより長い待ちは特別処理しない / longer waits are not forced
+ball_moves_max = 1        # 停止中にボールが動き出すのは1回まで。2回目からプレー中（0 = 使わない）/ ball moves allowed in a stoppage
+ball_move_grace_s = 1     # 停止の始まりからこの秒数の動きは数えない（外に出た時の動き）/ moves this soon after the start are not counted
+allow_unknown = 0         # 0: 不明な状況では停止にしない / "unknown" is never a stoppage
+goal_play_before_s = 10   # ゴールのタグの前この秒数以内にプレー（3人以上が速く走る）があること / play before the goal
+goal_team_fast = 3        # ゴール〜キックオフで、片方のチームは「この人数以上が ...
+goal_team_fast_s = 5      # ... この秒数以上速く走る」ことがない / one team never has this many running this long
+fallback_unknown = 0      # 1: 最低時間に足りないとき「不明」として残す / 0: 他に合う状況がなければ停止にしない
+
+[core | 芯（間違いなく止まっている）]   # core_need 個以上で芯 / core when core_need of these hold
+sign = 現在の D モデルの P(dead) が高い | P(dead) of the current D model is high | p_dead >= 0.7
+sign = ボールが見えていて、10秒間「両チームとも1人以上がボールに近づく」ことがない | ball seen and for 10 s not both teams have a player coming for it | lasting(ball_fresh > 0 and not (n_approach_home >= 1 and n_approach_away >= 1), 10)
+
+[play | プレー中のサイン（これがあれば芯にも D にもしない）]
+sign = キーパーが自分の PA でボールを持っている（パントキックの前など）| a keeper inside his box has the ball (e.g. before a punt) | keeper_ball > 0
+sign = 両チームとも1人以上がダッシュしている（0.5秒）| both teams have a player dashing (0.5 s) | lasting(n_dash_home >= 1 and n_dash_away >= 1, 0.5)
+
+[start | 始まりを探す]
+event = ボールの位置がピッチの外に出た | the ball position went outside the pitch | ball_out > 0
+back_to = 最後に3人以上が速く走っていた時点 | last moment 3+ players ran fast | n_fast >= 3
+
+[situation スローイン | throw-in]
+min_s = 3      # これより短い停止はこの状況とみなさない / shorter -> not this situation
+max_s = 35
+confirm = サイドライン上に止まっている選手 | a slow player on/over a side line | n_touch_slow >= 1
+confirm = サイドライン際の選手に何人か寄る | players gather near the side-line player | taker_side_dist < 2 and n_near_taker >= 3
+confirm = サイドライン際の選手が2秒以上止まっている | a player has stood at the side line for 2 s | lasting(taker_side_dist < 1, 2)
+confirm = サイドラインの外に立つ選手 | a slow player outside the side line | taker_side_dist < 0
+confirm = ボールがサイドラインの外 | ball (last position) outside a side line | ball_out_side > 0
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = サイドラインの選手がピッチに入った | the side-line player stepped in | n_touch_slow == 0 and recent(n_touch_slow >= 1, 3)
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = 2番目に速い選手が走り出した | the 2nd fastest runs | sp2 > 4
+
+[situation コーナーキック | corner kick]
+min_s = 12      # これより短い停止はこの状況とみなさない / shorter -> not this situation
+max_s = 60
+confirm = コーナー付近に止まっている選手 | a slow player near a corner flag | n_corner_slow >= 1
+confirm = PA に12人以上 | 12+ players in one penalty box | n_box_max >= 12
+confirm = 攻撃側が PA に4人以上 | 4+ attackers in that box | n_box_att >= 4
+confirm = ボールがゴールラインの外に出た | the ball went over a goal line | ball_out_goal > 0
+confirm = ボールがコーナー付近 | ball (last position) near a corner flag | ball_corner > 0
+must = どこかのコーナーフラッグが画面に写っている | a corner flag is in the picture | corner_visible != 0
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = キッカーがコーナーを離れた | the taker left the corner | n_corner_slow == 0 and recent(n_corner_slow >= 1, 3)
+end = PA の人数が減った（散らばる）| the box empties (players scatter) | n_box_max <= 8 and recent(n_box_max >= 12, 4)
+end = 2番目に速い選手が走り出した | the 2nd fastest runs | sp2 > 4
+
+[situation ゴールキック | goal kick]
+min_s = 4      # これより短い停止はこの状況とみなさない / shorter -> not this situation
+max_s = 45
+confirm = GK がゴールエリアで止まっている | keeper standing in his 6-yard box | gk_6yd > 0
+confirm = 蹴る側の PA に相手がいない | no opponent in the kicking side's box | opp_in_kick_box == 0
+confirm = 選手が散らばる | players spread out | d_spread > 0.5
+confirm = ボールがゴールエリア / ゴールラインの外 | ball in a 6-yard box or behind a goal line | ball_6yd > 0 or ball_out_goal > 0
+confirm = 3秒間 蹴る側の PA に相手がいない | no opponent in the kicking side's box for 3 s | lasting(opp_in_kick_box == 0, 3)
+# 再開の直前 3 秒で成り立つべき条件 / must hold just before the restart (require_last_s)
+must = 蹴る側のゴールエリアが画面に写っている | the kicking side's goal area is in the picture | kick_area_visible != 0
+must = 蹴る側のゴールエリアに選手がいる（キャッチ後のパント・スローとの違い）| a player in the kicking side's goal area (unlike a keeper's punt / throw after a catch) | n_in_kick_area >= 1
+require = 蹴る側の PA に相手の選手がいない | no opponent inside the kicking side's penalty box | opp_in_kick_box == 0
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = GK がゴールエリアを離れた | the keeper left the 6-yard box | gk_6yd == 0 and recent(gk_6yd > 0, 3)
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = 2番目に速い選手が走り出した | the 2nd fastest runs | sp2 > 4
+
+[situation 敵陣のFK | free kick near goal]
+min_s = 10      # これより短い停止はこの状況とみなさない / shorter -> not this situation
+max_s = 90
+confirm = 壁（止まった味方3人以上が並ぶ）| a wall: 3+ slow team-mates side by side | n_wall >= 3 and wall_goal_dist < 35
+confirm = PA に8人以上 | 8+ players in one penalty box | n_box_max >= 8
+confirm = 攻撃側が PA に3人以上 | 3+ attackers in that box | n_box_att >= 3
+confirm = ボールが止まっている | the ball is still | ball_still > 0
+confirm = ほぼ全員が歩いている | nearly everybody walks | frac_walk >= 0.9
+require = ボールが1秒以上完全に止まってから蹴る（ボールが見えないときは問わない）| the ball is completely still for 1 s before the kick (not checked when the ball is not seen) | recent(lasting(ball_still > 0, 1), 3) or ball_still < 0
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = 壁が崩れた | the wall broke up | n_wall < 2 and recent(n_wall >= 3, 3)
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = 止まっていたボールが動き出した | the still ball starts to move | ball_moving > 0 and recent(ball_still > 0, 3)
+
+[situation 自陣・中盤のFK | free kick far from goal]
+min_s = 4      # これより短い停止はこの状況とみなさない / shorter -> not this situation
+max_s = 40
+confirm = ボールが止まっている | the ball is still | ball_still > 0
+confirm = 3秒間ほぼ全員が歩く | nearly everybody walks for 3 s | lasting(frac_walk >= 0.9, 3)
+confirm = 3秒間 2番目に速い選手も遅い | even the 2nd fastest is slow for 3 s | lasting(sp2 < 2.0, 3)
+confirm = 味方同士が近くに止まる（小さな壁）| slow team-mates standing together (small wall) | n_wall >= 2 and wall_goal_dist < 50
+confirm = ボールに近づく選手がいない | nobody comes for the ball | n_approach_ball == 0
+require = ボールが1秒以上完全に止まってから蹴る（ボールが見えないときは問わない）| the ball is completely still for 1 s before the kick (not checked when the ball is not seen) | recent(lasting(ball_still > 0, 1), 3) or ball_still < 0
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = 2番目に速い選手が走り出した | the 2nd fastest runs | sp2 > 4
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = 止まっていたボールが動き出した | the still ball starts to move | ball_moving > 0 and recent(ball_still > 0, 3)
+
+[situation キックオフ | kick-off]
+# キックオフはタグだけで決める（前後半の始まり〜キックオフ、ゴール〜キックオフは必ず停止）。
+# 下の終了サインは、キックオフのタグの中で蹴った瞬間を探すのに使う / kick-off comes from the tags only
+min_s = 15      # これより短い停止はこの状況とみなさない / shorter -> not this situation
+max_s = 120
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 2番目に速い選手が走り出した | the 2nd fastest runs | sp2 > 4
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = キックオフのタグの終わり | end of the kick-off tag | tag_sp_to_end_s < 3 and tag_sp_since_start_s < 15
+
+[situation 負傷・交代 | injury or substitution]
+min_s = 10      # これより短い停止はこの状況とみなさない / shorter -> not this situation
+max_s = 300
+confirm = この先ずっと全員が遅い | everybody stays slow for long | ahead(lasting(sp_mean < 1.0, 12), 15)
+confirm = この先ずっとほぼ全員が歩く | nearly everybody keeps walking | ahead(lasting(frac_walk >= 0.95, 12), 15)
+confirm = 手前中央（交代ゾーン）のタッチライン際に2人以上 | 2+ players at the halfway line on the near touch line (substitution zone) | n_sub_zone >= 2
+confirm = 2番目に速い選手もとても遅い | even the 2nd fastest is very slow | sp2 < 1.5
+confirm = 交代ゾーンで選手が出入りした（10秒以内）| a player came in / went out at the substitution zone (10 s) | recent(sub_in_out > 0, 10)
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = 2番目に速い選手が走り出した | the 2nd fastest runs | sp2 > 4
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = 両チームとも2人以上が走り出した | 2+ players of each team run | n_fast_home >= 2 and n_fast_away >= 2
+
+[situation PK | penalty kick]
+min_s = 20      # これより短い停止はこの状況とみなさない / shorter -> not this situation
+max_s = 180
+confirm = PA にキーパーとキッカーだけ | only the keeper and the taker in a penalty box | pk_two > 0
+confirm = ボールが3秒間ペナルティスポットにある | the ball has been on a penalty spot for 3 s | lasting(ball_pk_spot > 0, 3)
+confirm = PA のすぐ外に8人以上が待つ | 8+ players waiting just outside that box | n_pk_edge >= 8
+confirm = キーパーがゴールライン上 | the keeper stands on his goal line | gk_on_line > 0
+confirm = ボールがペナルティスポットにある | the ball is on a penalty spot | ball_pk_spot > 0
+# 再開するときのボールの位置から確認 / first check where the ball is when play restarts
+require = 再開の直前にボールがペナルティスポットにある | the ball is on a penalty spot just before the restart | ball_pk_spot > 0
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = PA に選手がなだれ込んだ | players rush into the box | n_box_max >= 5 and recent(pk_two > 0, 3)
+end = ボールがスポットを離れた | the ball left the penalty spot | ball_pk_spot == 0 and recent(ball_pk_spot > 0, 3)
+end = 2番目に速い選手が走り出した | the 2nd fastest runs | sp2 > 4
+
+[situation 不明 | unknown]
+min_s = 5      # これより短い停止はこの状況とみなさない / shorter -> not this situation
+max_s = 40
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = 2番目に速い選手が走り出した | the 2nd fastest runs | sp2 > 4
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = 両チームとも2人以上が走り出した | 2+ players of each team run | n_fast_home >= 2 and n_fast_away >= 2

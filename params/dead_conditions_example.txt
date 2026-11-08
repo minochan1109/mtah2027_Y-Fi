@@ -1,0 +1,13 @@
+# あなたの条件（1行に1つ）
+#   dead か play | 日本語の名前 | English name | 式
+# 式で使える列の名前は、レポートの最後（C. 条件の式で使える列の名前）に一覧があります。
+# 使えるもの: and / or / not, < <= > >= == !=, + - * /, abs(x), isnan(x),
+#   lasting(x, 秒) = x が 秒 以上続いている   recent(x, 秒) = 過去 秒 以内に x があった
+#   ahead(x, 秒)  = これから 秒 以内に x になる
+
+dead | 最後のボールが外に出て、みんな歩いている | ball out and everybody walking | last_ball_out == 1 and frac_walking >= 0.7
+dead | 再開タグの4秒前から、ほぼ止まっている | before a restart tag, nearly still | tag_to_restart_s <= 4 and speed_mean < 1.5
+dead | ゴールのタグから30秒以内で遅い | within 30 s after a goal tag, slow | tag_since_goal_s < 30 and speed_mean < 2
+dead | 3秒以上だれも全力で走っていない | nobody sprinting for 3 s | lasting(n_sprint == 0, 3)
+play | ボールが速く動いていてピッチの中 | ball moving fast inside the pitch | ball_seen == 1 and ball_speed > 5 and last_ball_out == 0
+play | 戻り始めた選手がいる | some players just started running back | r_own_recover_onset + r_opp_recover_onset >= 2

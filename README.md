@@ -78,6 +78,23 @@ python ../more-than-a-hack-2027/evaluation/validate_submission.py results/team.c
 - 合成データ（実データと同じ 199,319 フレーム）では、全体で約3分でした。
 - パラメータは `--params my_params.json`（`config.Params` の項目名と値）で上書きできます。
 
+## 提出用の実行（採用した形：組み合わせ版のプレー停止）
+
+1つのコマンドで、選手の誤検出の除去 → ボールの信頼度 → タグの整理 → プレー停止の判定（組み合わせ版）
+→ 保持チームの確率 → 時系列による整列（H/A）→ 提出用 CSV まで出る。
+
+```bash
+python -m possession.v2.pipeline_v2 --repo ../more-than-a-hack-2027 --params params/no_ball_motion_no_tags.json \
+    --dead-method hybrid --out results/final/submission.csv --report results/final/report.txt
+python ../more-than-a-hack-2027/evaluation/validate_submission.py results/final/submission.csv
+```
+
+- `--dead-method hybrid`：プレー停止を `params/dead_hybrid.txt`（状況ごとのサイン・最低時間・3秒ルール）で決める。
+  付けなければ今までの v2（時系列のモデルだけで D を決める）。
+- `params/no_ball_motion_no_tags.json`：D のモデルにボールの動きとセットプレーのタグを使わない。
+- 判定の理由を見たいときは `--save-state results/final/state.pkl` を付け、`tools/dead_situations.py` と
+  `tools/compare_dead_view.py` を使う。
+
 ## バージョン2（試作）：ボールなしを基本にして、信頼できるボールを足す
 
 ```bash
