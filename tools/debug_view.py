@@ -279,6 +279,7 @@ def main(argv=None):
     ap.add_argument("--v2", action="store_true",
                     help="show what version 2 does: removed players grey, corrected team colours, "
                          "ball by trust (yellow trusted, orange interpolated, magenta rejected)")
+    ap.add_argument("--params", help="JSON overriding Params2 fields (with --v2), same as eval_cleaning.py")
     a = ap.parse_args(argv)
 
     repo = os.path.abspath(a.repo)
@@ -316,9 +317,15 @@ def main(argv=None):
         from possession.v2.clean_players import clean_players
         from possession.v2.config_v2 import Params2
         P2 = Params2()
+        if a.params:
+            import json
+            with open(a.params) as fh:
+                for k, v in json.load(fh).items():
+                    setattr(P2, k, v)
         P2.pitch_length, P2.pitch_width = L, W
         attack = preprocess.attack_sign(tr, blocks, FPS)
-        cpx, cpy, team_mat, rep_a = clean_players(tr, attack, P2)
+        from possession.v2.tag_policy import event_frames
+        cpx, cpy, team_mat, rep_a = clean_players(tr, attack, P2, event_mask=event_frames(tags, n, P2))
         removed = np.isfinite(tr.px) & np.isnan(cpx)
         bq, rep_b = assess_ball(tr.bx, tr.by, cpx, cpy, P2)
         rejected = np.isfinite(tr.bx) & (bq["status"] == REJECTED)

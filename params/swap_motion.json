@@ -1,0 +1,8 @@
+{
+  "use_keeper_gt": false,
+  "static_gap_s": 0.5,
+  "swap_link": true,
+  "swap_need_both": true,
+  "drop_rule": "motion",
+  "drop_window_s": 5
+}

@@ -18,11 +18,39 @@ class Params2(Params):
     static_goal_zone_m: float = 2.0
     static_anywhere_s: float = 60.0      # still this long anywhere = remove
     static_live_speed: float = 1.0       # ... but only while the other players move (not in a pause)
-    keeper_zone_depth_m: float = 6.0     # goalkeeper zone: this close to the goal line ...
+    penalty_depth_m: float = 16.5        # penalty area depth (from the goal line)
+    penalty_half_width_m: float = 20.16  # penalty area half width (40.32 m / 2)
+    penalty_margin_m: float = 10.0       # ... plus this margin around it
+    static_pen_s: float = 10.0           # still this long in the penalty area + margin (both ends) = remove
+    event_skip: bool = False             # rule 1 ignores frames inside set-piece / goal tags (needs the tags)
+    event_pad_s: float = 0.0             # ... widened by this many s before the tag starts
+    static_opp_pen_s: float = 5.0        # still this long near the penalty area of the goal the team attacks = remove
+    static_gap_s: float = 0.0            # a still run may be interrupted by this many s of speed noise (0 = strict)
+    use_keeper_gt: bool = True          # use the known goalkeeper box (if given) to fix team swaps
+    use_keeper_candidate: bool = True    # no GT box: protect the deepest object of the keeper zone from rules 1 and 2
+    det_box_m: float = 1.0               # nominal detection box size (m) around a player position
+    keeper_iou_min: float = 0.1          # min overlap with the GT keeper box to be the keeper
+    keeper_dup_iou: float = 0.5          # another detection this close to the GT box = duplicate, removed
+    keeper_zone_depth_m: float = 10.0    # goalkeeper zone: this close to the goal line ...
     keeper_zone_half_width_m: float = 10.0   # ... and this close to the centre line of the goal
     keeper_min_s: float = 3.0            # wrong-team "keeper" must persist this long to be re-assigned
     keeper_max_speed: float = 3.0        # ... and move slower than this on average
+    keeper_follow_depth_m: float = 20.0  # a re-assigned keeper keeps the team while within this of his goal line (0 = off)
+    keeper_follow_gap_s: float = 1.0     # ... across tracking gaps up to this long
+    keeper_follow_max_mps: float = 12.0  # ... but a jump faster than this between frames = another identity
     max_per_team: int = 11
+    lone_gk: bool = True                 # ONE detection alone in the penalty area (+ margin) = keeper
+    lone_margin_m: float = 10.0          # ... penalty area plus this margin
+    lone_gk_s: float = 0.0               # ... for at least this long (0 = as soon as it is alone)
+    drop_rule: str = "still"             # which detection goes first when a team has more than max_per_team:
+                                         #   "still" | "motion" | "overlap" | "both"
+    drop_window_s: float = 3.0           # motion: window (+- s) in which the movement is measured
+    drop_overlap_m: float = 1.0          # both: a team mate closer than this = duplicate, dropped first
+    swap_link: bool = False              # a short track starting/ending next to another slot's track gets its team
+    swap_max_s: float = 30.0             # only tracks up to this long are re-assigned
+    swap_link_gap_s: float = 0.2         # ... the other track ends/starts within this many s
+    swap_link_dist_m: float = 1.5        # ... and within this distance
+    swap_need_both: bool = False         # True: both ends (before and after) must link
 
     # ---- [B] ball_quality.py ------------------------------------------------------------------
     ball_outside_reject_m: float = 5.0   # detection this far outside the pitch = rejected

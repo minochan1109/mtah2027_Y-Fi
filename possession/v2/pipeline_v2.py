@@ -90,7 +90,7 @@ def run(args):
 
     # [A] players
     attack = preprocess.attack_sign(tr, blocks, P.fps)
-    px, py, team_mat, rep_a = clean_players.clean_players(tr, attack, P)
+    px, py, team_mat, rep_a = clean_players.clean_players(tr, attack, P, event_mask=tag_policy.event_frames(tags, n, P))
     log(f"[A] clean_players: {rep_a}")
 
     # [B] ball

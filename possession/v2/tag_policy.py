@@ -68,6 +68,17 @@ def _types(tag):
     return [t.lower() for g, t in tag["labels"] if g.lower() == "type"]
 
 
+def event_frames(tags, n_frames, P):
+    """(T,) bool: frames inside a set piece or goal tag (the roles 'restart' and 'goal' of CODE_POLICY),
+    widened by P.event_pad_s before the start. Decided per tag CODE for the whole match."""
+    m = np.zeros(n_frames, bool)
+    pad = int(round(P.event_pad_s * P.fps))
+    for g in tags or []:
+        if CODE_POLICY.get(g["code"].upper(), ("ignore", 0.0))[0] in ("restart", "goal"):
+            m[max(0, g["start"] - pad):max(0, min(n_frames, g["end"]))] = True
+    return m
+
+
 def tag_evidence(tags, side_of, n_frames, P):
     """Returns
         team_logit (T,)  log-odds evidence for HOME from tags (0 = no evidence)
