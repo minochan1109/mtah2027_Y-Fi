@@ -27,9 +27,9 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
-from possession.v2.dead_situation import detect_hybrid, read_config  # noqa: E402
-from possession.v2.expr import FPS, _runs  # noqa: E402
-from possession.v2.situation_features import situation_features  # noqa: E402
+from possession.v3.dead_situation import detect_hybrid, read_config  # noqa: E402
+from possession.v3.expr import FPS, _runs  # noqa: E402
+from possession.v3.situation_features import situation_features  # noqa: E402
 from possession.v2.config_v2 import Params2  # noqa: E402
 
 

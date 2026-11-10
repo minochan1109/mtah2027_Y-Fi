@@ -11,7 +11,7 @@ Under each half, the reason for the decision is written in Japanese:
 At the bottom, +-10 s strips: current / new (/ truth when the CSV has a gt column).
 
 Step 1 - the current method, with its reasons per frame:
-    python -m possession.v2.pipeline_v2 --repo ../more-than-a-hack-2027 --out results/cmp/v2.csv \
+    python -m possession.v3.pipeline_v3 --repo ../more-than-a-hack-2027 --dead-method v2 --out results/cmp/v2.csv \
         --dead-debug results/cmp/v2 --save-state results/cmp/state.pkl
 Step 2 - the new method on the same state:
     python tools/dead_situations.py --states results/cmp/state.pkl --out results/cmp/new

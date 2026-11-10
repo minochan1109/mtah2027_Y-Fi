@@ -1,7 +1,7 @@
 """Run the situation-based D detector (no ball) and report how well it works.
 
 Step 1 - save the state of each game (needs the new --save-state, which also stores the players):
-    python -m possession.v2.pipeline_v2 --repo ../more-than-a-hack-2027 --external external/EVAL-G1 \
+    python -m possession.v3.pipeline_v3 --repo ../more-than-a-hack-2027 --external external/EVAL-G1 \
         --out results/ds/g1.csv --save-state results/ds/g1_state.pkl
     (same for EVAL-G2; for the challenge game leave out --external -> no truth, only the frames CSV)
 
@@ -14,7 +14,7 @@ Step 2 - detect and report:
        results/ds/report_<game>_frames.csv                   (for tools/debug_view.py --frames)
        results/ds/report_<game>_stretches.csv                (every D stretch: time, situation, why)
 
-The flow is explained at the top of possession/v2/dead_situation.py. Only players and Smart Tagging
+The flow is explained at the top of possession/v3/dead_situation.py. Only players and Smart Tagging
 are used (no ball). Truth (for scores) is only read for OTHER games (made with tools/make_eval_data.py).
 """
 import argparse
@@ -33,9 +33,9 @@ sys.path.insert(0, os.path.dirname(HERE))
 from possession import hmm, postprocess  # noqa: E402
 from possession.v2 import hmm_v2, tag_policy  # noqa: E402
 from possession.v2.config_v2 import Params2  # noqa: E402
-from possession.v2.dead_situation import detect, detect_hybrid, read_config  # noqa: E402
-from possession.v2.expr import FPS, _runs  # noqa: E402
-from possession.v2.situation_features import situation_features  # noqa: E402
+from possession.v3.dead_situation import detect, detect_hybrid, read_config  # noqa: E402
+from possession.v3.expr import FPS, _runs  # noqa: E402
+from possession.v3.situation_features import situation_features  # noqa: E402
 
 SIT_JA_FALLBACK = {"none": "タグなし（ボールアウト等）", "goal": "ゴール後", "throw-in": "スローイン",
                    "corner kick": "コーナーキック", "free kick": "FK", "goal kick": "ゴールキック",
@@ -71,12 +71,12 @@ def truth_types(st):
     return typ
 
 
-def relabel(st, mask):
+def relabel(st, mask, p_home=None):
     P = Params2()
     for k, v in st["params"].items():
         setattr(P, k, v)
     p_dead = np.where(mask, 0.999, 0.001)
-    logE = hmm.emissions(p_dead, st["p_home"], P)
+    logE = hmm.emissions(p_dead, st["p_home"] if p_home is None else p_home, P)
     states = [hmm_v2.viterbi_tv(logE[a:b + 1], P, st["switch_cost"][a:b + 1]) for _, a, b in st["blocks"]]
     return postprocess.to_labels(states, st["n"], st["blocks"])
 
@@ -167,7 +167,15 @@ def main(argv=None):
             graded[x:y + 1] = True
         st.update({"cols": cols, "mask": mask, "stretches": stretches, "dropped": dropped, "info": info,
                    "graded": graded, "has_gt": "gt" in st})
-        st["labels_new"] = relabel(st, mask)
+        st["ha_why"] = None
+        if hybrid and cfg["settings"].get("soccer_rules", 0) > 0:
+            from possession.v3 import soccer_rules
+            ph, why, rep = soccer_rules.apply(st, mask, stretches, cfg["situations"], cols)
+            st["ha_why"], st["ha_rep"] = why, rep
+            st["labels_new"] = relabel(st, mask, ph)
+            print(f"{st['name']}: football rules for H/A: {rep}", flush=True)
+        else:
+            st["labels_new"] = relabel(st, mask)
         if st["has_gt"]:
             gt = st["gt"]
             st["dead"], st["play"] = gt == "D", np.isin(gt, ["H", "A"])
@@ -294,6 +302,10 @@ def main(argv=None):
         nveto = sum(int(s["info"]["vetoed"].sum()) for s in sts) / FPS
         R.add(f"  play signs ([play] block) took {nveto:.0f} s out of D stretches",
               f"  プレー中のサイン（[play]）で停止から外した時間: {nveto:.0f} 秒")
+        for s_ in sts:
+            if s_.get("ha_rep"):
+                R.add(f"  {s_['name']}: football rules for H/A {s_['ha_rep']}",
+                      f"  {s_['name']}: H/A のサッカーのルール（持っている選手のフレーム数・キーパーのフレーム数・再開の数）{s_['ha_rep']}")
         R.add(f"  3-second rule: {ndrop} short D turned into play, {nfill} short play joined into D",
               f"  3秒ルール: 短い停止をプレー中に戻した {ndrop} 回、短いプレー中を停止につないだ {nfill} 回")
     if not hybrid:
@@ -392,8 +404,8 @@ def main(argv=None):
         R.add("")
 
     # ---------------------------------------------------------------- 5. columns
-    R.add("5. COLUMNS YOU CAN USE (players + tags; see possession/v2/situation_features.py)",
-          "5. 使える列（選手とタグ。説明は possession/v2/situation_features.py）")
+    R.add("5. COLUMNS YOU CAN USE (players + tags; see possession/v3/situation_features.py)",
+          "5. 使える列（選手とタグ。説明は possession/v3/situation_features.py）")
     names = sorted(sts[0]["cols"].keys())
     for i in range(0, len(names), 6):
         R.add("    " + "  ".join(names[i:i + 6]))
@@ -471,6 +483,8 @@ def main(argv=None):
             note[ch == 1] = "3秒未満のプレー中なので前後の停止とつないだ（3秒ルール）"
             df["core"] = info["core"][rows].astype(int)
         df["mode"] = "hybrid" if hybrid else "situations"
+        if s.get("ha_why") is not None:
+            df["ha_rule"] = s["ha_why"][rows]
         df["note_ja"] = note[rows]
         df.to_csv(f"{a.out}_{s['name']}_frames.csv", index=False)
         st_rows = []
