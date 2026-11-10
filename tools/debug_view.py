@@ -20,6 +20,11 @@ The tracking has no box size, so the box is drawn with an approximate real size
 --v2 shows version 2 instead: removed players grey, team colours after the goalkeeper fix,
 ball trusted yellow / interpolated orange / rejected magenta (possession/v2/*).
 
+--frames <prefix>_frames.csv (from pipeline_v2 --dead-debug) adds OUR result: the outer frame of the
+video is our label (H blue / A red / D grey), and a bottom panel shows P(dead), the pseudo label and
+the rule behind it, the features that pushed P(dead), and +-10 s strips of ours / pseudo / P(dead).
+--auto short_d|long_d|play|all picks clips from our result (one video per category + an index).
+
 Ball gaps of up to --interp-max-s seconds (default 1.0) with a detection on both sides are filled
 by a straight line and drawn in orange. Longer gaps are left empty.
 
@@ -189,6 +194,41 @@ def tag_report(add, tags, side_of, team_names):
     add("")
 
 
+# ---------------------------------------------------------------- our result
+RESULT_PANEL_H = 150
+RES_COL = {"H": BLUE, "A": RED, "D": (170, 170, 170)}
+
+
+def draw_result_panel(width, t, res, window_s=10):
+    panel = np.full((RESULT_PANEL_H, width, 3), 15, np.uint8)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    r = res["rows"].get(t, {})
+    lines = [f"OURS {res['lab'][t] or '-'}   P(dead) {r.get('p_dead', float('nan'))}   "
+             f"pseudo {r.get('pseudo_dead', '')} {r.get('pseudo_rule', '') or ''}",
+             f"mean speed {r.get('speed_mean', '')}  walking {r.get('frac_walking', '')}  ball seen {r.get('ball_seen', '')}"
+             f"  since {r.get('since_seen', '')} s  ball speed {r.get('ball_speed', '')}  last out {r.get('last_ball_out', '')}",
+             "pushed by: " + "  ".join(str(r.get(f"top{k}", "")) for k in range(1, 4)),
+             "           " + "  ".join(str(r.get(f"top{k}", "")) for k in range(4, 6))]
+    for i, s in enumerate(lines):
+        cv2.putText(panel, s[:150], (10, 20 + 20 * i), font, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+    span = window_s * FPS
+    x0, x1 = 80, width - 10
+    xs = np.linspace(x0, x1, 2 * span + 2).astype(int)
+    for row, (name, arr, colour) in enumerate((
+            ("ours", res["lab"], lambda v: RES_COL.get(v, (40, 40, 40))),
+            ("pseudo", res["pseudo"], lambda v: {1: (170, 170, 170), 0: (60, 160, 60)}.get(int(v), (40, 40, 40))),
+            ("P(dead)", res["pdead"], lambda v: tuple(int(c) for c in (np.array([60, 160, 60]) * (1 - v)
+                                                                       + np.array([170, 170, 170]) * v))
+             if np.isfinite(v) else (40, 40, 40)))):
+        y0 = 92 + 18 * row
+        cv2.putText(panel, name, (10, y0 + 12), font, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+        for k, f in enumerate(range(t - span, t + span + 1)):
+            if 0 <= f < len(arr):
+                cv2.rectangle(panel, (xs[k], y0), (xs[k + 1], y0 + 14), colour(arr[f]), -1)
+    cv2.line(panel, (xs[span], 88), (xs[span], 146), (255, 255, 255), 2)
+    return panel
+
+
 # ---------------------------------------------------------------- report
 def write_report(path, tr, bxi, filled, blocks, max_gap, jump_mps, video_range, tags=(), side_of=None):
     det = np.isfinite(tr.bx)
@@ -280,6 +320,14 @@ def main(argv=None):
                     help="show what version 2 does: removed players grey, corrected team colours, "
                          "ball by trust (yellow trusted, orange interpolated, magenta rejected)")
     ap.add_argument("--params", help="JSON overriding Params2 fields (with --v2), same as eval_cleaning.py")
+    ap.add_argument("--frames", help="<prefix>_frames.csv from pipeline_v2 --dead-debug: show OUR result "
+                                     "(outer frame colour = our label, P(dead), pseudo label and why)")
+    ap.add_argument("--auto", choices=["short_d", "long_d", "play", "all"],
+                    help="with --frames: pick clips automatically instead of --start/--seconds")
+    ap.add_argument("--per-category", type=int, default=5)
+    ap.add_argument("--pad-s", type=float, default=3.0)
+    ap.add_argument("--max-s", type=float, default=20.0)
+    ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args(argv)
 
     repo = os.path.abspath(a.repo)
@@ -333,6 +381,17 @@ def main(argv=None):
         filled = bq["status"] == INTERP
         print(f"v2 players: {rep_a}\nv2 ball: {rep_b}", flush=True)
 
+    # ---- our current result (pipeline_v2 --dead-debug <prefix> -> <prefix>_frames.csv)
+    res = None
+    if a.frames:
+        import pandas as pd
+        fr = pd.read_csv(a.frames)
+        res = {"lab": np.full(n, "", dtype="<U1"), "pdead": np.full(n, np.nan), "pseudo": np.full(n, -1),
+               "rows": {int(f): r for f, r in zip(fr["frame"].values, fr.to_dict("records"))}, "fr": fr}
+        res["lab"][fr["frame"].values] = fr["label"].astype(str).values
+        res["pdead"][fr["frame"].values] = fr["p_dead"].values
+        res["pseudo"][fr["frame"].values] = fr["pseudo_dead"].values
+
     cap = cv2.VideoCapture(paths["video"])
     if not cap.isOpened():
         raise SystemExit(f"cannot open video: {paths['video']}")
@@ -343,24 +402,16 @@ def main(argv=None):
     write_report(a.out_txt, tr, bxi, filled, blocks, max_gap, a.jump_mps, (f0, f1), tags, side_of)
     print(f"wrote {a.out_txt}", flush=True)
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
-    ok, img = cap.read()
-    if not ok:
-        raise SystemExit(f"cannot read frame {f0}")
-    vh, vw = int(img.shape[0] * a.scale) // 2 * 2, int(img.shape[1] * a.scale) // 2 * 2
+    vh = int(1080 * a.scale) // 2 * 2
+    vw = int(1920 * a.scale) // 2 * 2
     pitch0, PP, _ = pitch_canvas(vh, L, W)
     out_w = (vw + pitch0.shape[1]) // 2 * 2
-    os.makedirs(os.path.dirname(os.path.abspath(a.out_video)), exist_ok=True)
-    out_h = vh + TAG_PANEL_H
-    out = cv2.VideoWriter(a.out_video, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (out_w, out_h))
-    home = tr.team == 0
+    out_h = vh + TAG_PANEL_H + (RESULT_PANEL_H if res else 0)
     team_now = lambda t, k: int(((team_mat[t] == k) & np.isfinite(tr.px[t]) & ~removed[t]).sum())  # noqa: E731
 
-    t = f0
-    while ok and t < f1:
+    def draw(t, img, title=""):
         H = Hs[t] if valid[t] and np.isfinite(Hs[t]).all() else None
         pitch = pitch0.copy()
-        # players
         for s in range(tr.px.shape[1]):
             x, y = tr.px[t, s], tr.py[t, s]
             if not np.isfinite(x):
@@ -369,7 +420,6 @@ def main(argv=None):
             if H is not None:
                 box_on_ground(img, H, x, y, L, W, 0.9, 1.9, col, 3)
             cv2.circle(pitch, PP(x, y), 6, col, -1)
-        # ball
         if np.isfinite(bxi[t]):
             col = MAGENTA if rejected[t] else (ORANGE if filled[t] else YELLOW)
             if H is not None:
@@ -379,22 +429,75 @@ def main(argv=None):
         state = ("REJECTED" if rejected[t] else "detected" if np.isfinite(tr.bx[t])
                  else ("interpolated" if filled[t] else "MISSING"))
         frame = cv2.resize(img, (vw, vh), interpolation=cv2.INTER_AREA)
+        if res:                                       # outer frame of the video = our label
+            lab = res["lab"][t]
+            c = {"H": BLUE, "A": RED, "D": (170, 170, 170)}.get(lab, (0, 0, 0))
+            cv2.rectangle(frame, (0, 0), (vw - 1, vh - 1), c, 10)
         canvas = np.zeros((out_h, out_w, 3), np.uint8)
         canvas[:vh, :vw] = frame
         canvas[:vh, vw:vw + pitch.shape[1]] = pitch[:, : out_w - vw]
-        canvas[vh:] = draw_tag_panel(out_w, t, tags, side_of)
-        info = (f"{tstr(t)}  frame {t}  ball {state}  "
-                f"home {team_now(t, 0)}  away {team_now(t, 1)}" + ("  [v2]" if a.v2 else ""))
+        canvas[vh:vh + TAG_PANEL_H] = draw_tag_panel(out_w, t, tags, side_of)
+        if res:
+            canvas[vh + TAG_PANEL_H:] = draw_result_panel(out_w, t, res)
+        info = (f"{title}  {tstr(t)}  frame {t}  ball {state}  "
+                f"home {team_now(t, 0)}  away {team_now(t, 1)}" + ("  [v2]" if a.v2 else "")
+                + (f"  OURS {res['lab'][t] or '-'}  P(dead) {res['pdead'][t]:.2f}" if res else ""))
         cv2.rectangle(canvas, (0, 0), (out_w, 30), (0, 0, 0), -1)
-        cv2.putText(canvas, info, (10, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
-        out.write(canvas)
-        t += 1
-        if (t - f0) % (60 * FPS) == 0:
-            print(f"  {(t - f0) // FPS} s written", flush=True)
+        cv2.putText(canvas, info.strip(), (10, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        return canvas
+
+    def write_range(out, a0, a1, title=""):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, a0)
+        t = a0
         ok, img = cap.read()
-    out.release()
+        while ok and t < a1:
+            out.write(draw(t, img, title))
+            t += 1
+            if (t - a0) % (60 * FPS) == 0:
+                print(f"  {(t - a0) // FPS} s written", flush=True)
+            ok, img = cap.read()
+        return t - a0
+
+    os.makedirs(os.path.dirname(os.path.abspath(a.out_video)), exist_ok=True)
+    if a.auto:
+        if not res:
+            raise SystemExit("--auto needs --frames (pipeline_v2 --dead-debug <prefix> writes <prefix>_frames.csv)")
+        sys.path.insert(0, HERE)
+        from dead_view import pick_clips
+        cats, _ = pick_clips(res["fr"], n, a.per_category, np.random.default_rng(a.seed))
+        want = list(cats) if a.auto == "all" else [a.auto]
+        base, ext = os.path.splitext(a.out_video)
+        index = []
+        for cat in want:
+            clips = cats.get(cat, [])
+            if not clips:
+                continue
+            path = f"{base}_{cat}{ext or '.mp4'}"
+            out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (out_w, out_h))
+            index.append(f"[{cat}] -> {path}")
+            for i, (s, e) in enumerate(clips):
+                r = res["rows"].get(int((s + e) // 2), {})
+                index.append(f"  {i + 1}. {tstr(s)}-{tstr(e)} ({(e - s) / FPS:.1f} s)  pseudo {r.get('pseudo_rule', '')}"
+                             f"  P(dead) {r.get('p_dead', '')}  top {r.get('top1', '')}")
+                card = np.zeros((out_h, out_w, 3), np.uint8)
+                cv2.putText(card, f"{cat} #{i + 1}   {tstr(s)} - {tstr(e)}  ({(e - s) / FPS:.1f} s)",
+                            (40, out_h // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
+                for _ in range(FPS):
+                    out.write(card)
+                a0 = max(0, int(s - a.pad_s * FPS))
+                a1 = min(total, int(min(e + a.pad_s * FPS, a0 + a.max_s * FPS)))
+                write_range(out, a0, a1, f"{cat} #{i + 1}")
+            out.release()
+            print(f"wrote {path} ({len(clips)} clips)", flush=True)
+        with open(f"{base}_index.txt", "w", encoding="utf-8") as fh:
+            fh.write("\n".join(index) + "\n")
+        print(f"wrote {base}_index.txt")
+    else:
+        out = cv2.VideoWriter(a.out_video, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (out_w, out_h))
+        k = write_range(out, f0, f1)
+        out.release()
+        print(f"wrote {a.out_video} ({k / FPS:.0f} s)")
     cap.release()
-    print(f"wrote {a.out_video} ({(t - f0) / FPS:.0f} s)")
 
 
 if __name__ == "__main__":

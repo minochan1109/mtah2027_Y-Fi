@@ -52,6 +52,13 @@ class Params2(Params):
     swap_link_dist_m: float = 1.5        # ... and within this distance
     swap_need_both: bool = False         # True: both ends (before and after) must link
 
+    # ---- D model ------------------------------------------------------------------------------
+    home_calib_a: float = 1.0            # P(home) calibration: sigmoid(a * logit(p) + b). a < 1 tones down an
+    home_calib_b: float = 0.0            # over-confident model (off: not fitted to any data)
+    dead_set_piece_tags: bool = True     # False: the D model ignores the SET PIECES tags (goal tags are kept)
+    dead_ball_motion: bool = True        # False: the D model never uses how the ball moves (speed, in
+                                         # flight, still) -- only where it is and whether it is seen
+
     # ---- [B] ball_quality.py ------------------------------------------------------------------
     ball_outside_reject_m: float = 5.0   # detection this far outside the pitch = rejected
     ball_link_gap_s: float = 0.2         # detections this close in time can belong to one tracklet

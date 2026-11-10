@@ -1,0 +1,132 @@
+# Situation-based D detector (possession/v2/dead_situation.py). PLAYERS AND TAGS ONLY, no ball.
+# Lines:   sign / confirm / end  =  日本語 | English | expression        ('#' starts a comment)
+# Columns: see possession/v2/situation_features.py (or the end of the report).
+# Helpers: lasting(x, s)  recent(x, s)  ahead(x, s)  abs(x)   and / or / not
+# Every list should have 5 signs; `need` of them (2) must be true at the same time.
+
+[settings]
+need = 2              # 5つのうちいくつ満たせばよいか / how many of the 5 signs must hold
+start_hold_s = 1.0    # 開始サインが続く時間 / start signs must hold this long
+start_back_s = 1.0    # D の開始をこれだけ前にずらす（選手の反応は遅れる）/ D starts this much earlier
+classify_s = 6        # 状況を決めるために見る時間 / seconds used to decide the situation
+classify_min = 0.25   # これ未満なら「不明」/ below this share of frames the situation is "unknown"
+end_hold_s = 0.3      # 終了サインが続く時間 / end signs must hold this long
+end_back_s = 1.5      # D の終わりをこれだけ前にずらす（再開→加速は遅れる）/ D ends this much earlier
+gap_after_s = 1.0     # 終わってから次を探すまで / wait after an end before searching again
+start_back_max_s = 8  # back_to で戻せる最大秒数 / at most this far back with back_to
+
+[start | 開始のサイン]
+# D の始まりを「はっきりプレー中だった最後の瞬間」の直後まで戻す（最大 start_back_max_s 秒）
+back_to = 速い選手が3人以上いた最後の時点 | last moment 3+ players ran fast | n_fast >= 3
+sign = 2秒間ほぼ全員が歩いている | nearly everybody has walked for 2 s | lasting(frac_walk >= 0.8, 2)
+sign = 2秒間 2番目に速い選手も遅い | even the 2nd fastest has been slow for 2 s | lasting(sp2 < 2.5, 2)
+sign = 直前まで速かったのに今は遅い | fast just before, slow now | recent(sp2 > 4.5, 4) and sp2 < 2.5
+sign = 減速する選手が続く | players keep slowing down | lasting(n_decel >= 1, 1)
+sign = セットプレー/ゴールのタグが近い | a set-piece or goal tag is near | tag_sp_to_start_s <= 12 or tag_sp_since_start_s <= 2 or tag_since_goal_s <= 5
+
+[situation スローイン | throw-in]
+min_s = 4
+max_s = 35
+confirm = サイドライン上に止まっている選手 | a slow player on/over a side line | n_touch_slow >= 1
+confirm = サイドライン際の選手に何人か寄る | players gather near the side-line player | taker_side_dist < 2 and n_near_taker >= 3
+confirm = スローインのタグ | throw-in tag | tag_throw > 0
+confirm = サイドラインの外に立つ選手 | a slow player outside the side line | taker_side_dist < 0
+confirm = 2秒間サイドライン上に選手 | a slow player on the side line for 2 s | lasting(n_touch_slow >= 1, 2)
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = サイドラインの選手がピッチに入った | the side-line player stepped in | n_touch_slow == 0 and recent(n_touch_slow >= 1, 3)
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = タグの終わり（再開の約3秒後）| end of the set-piece tag (about 3 s after the restart) | tag_sp_to_end_s < 3 and tag_sp_since_start_s < 15
+
+[situation コーナーキック | corner kick]
+min_s = 12
+max_s = 60
+confirm = コーナー付近に止まっている選手 | a slow player near a corner flag | n_corner_slow >= 1
+confirm = PA に12人以上 | 12+ players in one penalty box | n_box_max >= 12
+confirm = 攻撃側が PA に4人以上 | 4+ attackers in that box | n_box_att >= 4
+confirm = コーナーキックのタグ | corner-kick tag | tag_corner > 0
+confirm = 3秒間 PA に12人以上 | 12+ players in a box for 3 s | lasting(n_box_max >= 12, 3)
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = キッカーがコーナーを離れた | the taker left the corner | n_corner_slow == 0 and recent(n_corner_slow >= 1, 3)
+end = PA の人数が減った（散らばる）| the box empties (players scatter) | n_box_max <= 8 and recent(n_box_max >= 12, 4)
+end = タグの終わり | end of the set-piece tag | tag_sp_to_end_s < 3 and tag_sp_since_start_s < 15
+
+[situation ゴールキック | goal kick]
+min_s = 8
+max_s = 45
+confirm = GK がゴールエリアで止まっている | keeper standing in his 6-yard box | gk_6yd > 0
+confirm = GK のPA に相手がいない | no opponent in the keeper's box | opp_in_gk_box <= 1
+confirm = ゴールキックのタグ | goal-kick tag | tag_goalkick > 0
+confirm = 選手が散らばる | players spread out | d_spread > 0.5
+confirm = 3秒間 GK のPA に相手がいない | no opponent in the keeper's box for 3 s | lasting(opp_in_gk_box == 0, 3)
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = GK がゴールエリアを離れた | the keeper left the 6-yard box | gk_6yd == 0 and recent(gk_6yd > 0, 3)
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = タグの終わり | end of the set-piece tag | tag_sp_to_end_s < 3 and tag_sp_since_start_s < 15
+
+[situation 敵陣のFK | free kick near goal]
+min_s = 12
+max_s = 90
+confirm = 壁（止まった味方3人以上が並ぶ）| a wall: 3+ slow team-mates side by side | n_wall >= 3 and wall_goal_dist < 35
+confirm = PA に8人以上 | 8+ players in one penalty box | n_box_max >= 8
+confirm = 攻撃側が PA に3人以上 | 3+ attackers in that box | n_box_att >= 3
+confirm = FK のタグ | free-kick tag | tag_fk > 0
+confirm = ほぼ全員が歩いている | nearly everybody walks | frac_walk >= 0.9
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = 壁が崩れた | the wall broke up | n_wall < 2 and recent(n_wall >= 3, 3)
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = タグの終わり | end of the set-piece tag | tag_sp_to_end_s < 3 and tag_sp_since_start_s < 15
+
+[situation 自陣・中盤のFK | free kick far from goal]
+min_s = 5
+max_s = 40
+confirm = FK のタグ | free-kick tag | tag_fk > 0
+confirm = 3秒間ほぼ全員が歩く | nearly everybody walks for 3 s | lasting(frac_walk >= 0.9, 3)
+confirm = 3秒間 2番目に速い選手も遅い | even the 2nd fastest is slow for 3 s | lasting(sp2 < 2.0, 3)
+confirm = 味方同士が近くに止まる（小さな壁）| slow team-mates standing together (small wall) | n_wall >= 2 and wall_goal_dist < 50
+confirm = セットプレーのタグが近い | a set-piece tag is near | tag_sp_to_start_s <= 8 or tag_sp_since_start_s <= 3
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = 2番目に速い選手が走り出した | the 2nd fastest runs | sp2 > 4
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = タグの終わり | end of the set-piece tag | tag_sp_to_end_s < 3 and tag_sp_since_start_s < 15
+
+[situation キックオフ | kick-off]
+min_s = 20
+max_s = 120
+confirm = 両チームとも自陣にいる | both teams inside their own half | own_half_min >= 0.75
+confirm = センターサークルに2人以上 | 2+ players in the centre circle | n_centre >= 2
+confirm = ゴール/キックオフのタグ | goal or kick-off tag | tag_ko > 0 or tag_since_goal_s < 60
+confirm = ほぼ全員が歩いている | nearly everybody walks | frac_walk >= 0.95
+confirm = 平均速度がとても遅い | very low mean speed | sp_mean < 1.0
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 相手陣地に入る選手が出た | players cross into the other half | own_half_min < 0.8
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = タグの終わり | end of the set-piece tag | tag_sp_to_end_s < 3 and tag_sp_since_start_s < 15
+
+[situation 負傷・交代 | injury or substitution]
+min_s = 30
+max_s = 300
+confirm = この先ずっと全員が遅い | everybody stays slow for long | ahead(lasting(sp_mean < 1.0, 12), 15)
+confirm = この先ずっとほぼ全員が歩く | nearly everybody keeps walking | ahead(lasting(frac_walk >= 0.95, 12), 15)
+confirm = セットプレーのタグが遠い | no set-piece tag nearby | tag_sp_to_start_s > 30 and tag_sp_since_end_s > 5
+confirm = 2番目に速い選手もとても遅い | even the 2nd fastest is very slow | sp2 < 1.5
+confirm = サイドライン外に2人以上 | 2+ players on/over a side line | n_touch_slow >= 2
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = 2番目に速い選手が走り出した | the 2nd fastest runs | sp2 > 4
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = タグの終わり | end of the set-piece tag | tag_sp_to_end_s < 3 and tag_sp_since_start_s < 15
+
+[situation 不明 | unknown]
+min_s = 8
+max_s = 40
+end = 何人も加速した | several players accelerate | n_accel >= 2
+end = 速く走る選手が増えた | more players run fast | n_fast >= 3
+end = 2番目に速い選手が走り出した | the 2nd fastest runs | sp2 > 4
+end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
+end = タグの終わり | end of the set-piece tag | tag_sp_to_end_s < 3 and tag_sp_since_start_s < 15

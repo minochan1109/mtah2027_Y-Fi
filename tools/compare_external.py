@@ -15,7 +15,7 @@ import re
 import subprocess
 import sys
 
-MODULES = {"v1": "possession.pipeline", "v2": "possession.v2.pipeline_v2"}
+MODULES = {"v1": "possession.pipeline", "v2": "possession.v2.pipeline_v2", "v3": "possession.v3.pipeline_v3"}
 
 
 def main(argv=None):

@@ -47,3 +47,18 @@ def test_pipeline_v2_runs(tmp_path):
                       "--blocks", "[[1,200,5800],[2,6200,11800]]"])
     sub = pd.read_csv(csv)
     assert len(sub) == 12000 and set(sub["label"]) <= {"H", "A", "D", "X"}
+
+
+def test_pipeline_v3_runs(tmp_path):
+    from possession.v3 import pipeline_v3
+    repo = os.path.abspath(os.environ.get("MTAH_REPO", ""))
+    assert os.path.isfile(os.path.join(repo, "games.py")), "set MTAH_REPO to the more-than-a-hack-2027 clone"
+    out = str(tmp_path)
+    synthetic.write_bundle(out, T=12000, blocks=((1, 200, 5800), (2, 6200, 11800)))
+    csv = os.path.join(out, "v3.csv")
+    pipeline_v3.main(["--repo", repo, "--data-dir", os.path.join(out, "data"), "--out", csv,
+                      "--cache-dir", os.path.join(out, "cache"), "--n-frames", "12000",
+                      "--blocks", "[[1,200,5800],[2,6200,11800]]"])
+    sub = pd.read_csv(csv)
+    assert len(sub) == 12000 and set(sub["label"]) <= {"H", "A", "D", "X"}
+    assert (sub["label"].iloc[200:5801] != "X").all()
