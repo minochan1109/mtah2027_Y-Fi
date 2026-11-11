@@ -1,7 +1,12 @@
 """Version 3 end to end (the submission).
 
     python -m possession.v3.pipeline_v3 --repo ../more-than-a-hack-2027 --out results/final/submission.csv \
-        --report results/final/report.txt
+        --report results/final/report.txt \
+        --team-train results/team_feat/EVAL-G1.npz results/team_feat/EVAL-G2.npz
+
+--team-train: the H/A team model learns from OTHER games' answer keys only (team_external.py); make the
+files first with --external external/EVAL-G1 --team-features-out results/team_feat/EVAL-G1.npz (and G2).
+Without --team-train the team model learns from this game's pseudo labels (as in version 2).
 
 [A] players -> [B] ball -> [C] tags -> [D] P(dead), P(home) -> [D2] play stopped (hybrid detector,
 params/dead_hybrid.txt) -> [E] H/A by the time model inside every play stretch -> CSV.
@@ -23,7 +28,7 @@ import pandas as pd
 from .. import data, features, hmm, models, postprocess, preprocess, pseudo_labels
 from ..v2 import ball_quality, clean_players, features_v2, hmm_v2, model_v2, pseudo_v2, tag_policy
 from ..v2.ball_quality import TRUSTED
-from . import hmm_v3
+from . import hmm_v3, team_external
 from .config_v3 import Params3
 
 REPORT = []
@@ -125,6 +130,15 @@ def run(args):
         fa = clue_features.align_features(prep, team_mat, P)
         fd = pd.concat([fd, fa], axis=1)
         log(f"[MT-26] D clues added: {list(fa.columns)}")
+    if P.team_lasttouch:
+        Xh, Xa = team_external.add_lasttouch(Xh, Xa, prep, team_mat, bq, P)
+        log("[D] last-touch team features added")
+    if args.team_features_out:
+        if not (args.external and os.path.isfile(_external_gt(args.external))):
+            raise SystemExit("--team-features-out needs --external with an answer key (other games only)")
+        gt_ext = pd.read_csv(_external_gt(args.external))["label"].astype(str).to_numpy()[:n]
+        team_external.save_team_features(args.team_features_out, name, Xh, Xa, bq["conf"], gt_ext)
+        log(f"wrote {args.team_features_out} (team features + true H/A of {name})")
 
     control = pseudo_v2.control_events_v2(prep, team_mat, bq, P)
     y_dead = pseudo_labels.dead_labels(fd, P, control)
@@ -144,7 +158,10 @@ def run(args):
     dm = models.DeadModel(P).fit(fd_model, y_dead)
     p_dead = dm.predict(fd)
     log("dead model top coefficients: " + ", ".join(f"{a}={c:+.2f}" for a, c in dm.coefficients()[:6]))
-    p_model, _ = model_v2.fit_predict(Xh, Xa, y_team, bq["conf"], P, log=log)
+    if args.team_train:
+        p_model = team_external.fit_predict(Xh, Xa, P, args.team_train, name, log=log)
+    else:
+        p_model, _ = model_v2.fit_predict(Xh, Xa, y_team, bq["conf"], P, log=log)
     p_home = 1 / (1 + np.exp(-(_logit(p_model) + tag_logit)))
     ca, cb = getattr(P, "home_calib_a", 1.0), getattr(P, "home_calib_b", 0.0)   # off unless set in --params
     if ca != 1.0 or cb != 0.0:
@@ -209,6 +226,15 @@ def run(args):
         states = [hmm_v2.viterbi_tv(logE[a:b + 1], P, switch_cost[a:b + 1]) for _, a, b in blocks]
         labels = postprocess.to_labels(states, n, blocks)
         log(f"[E] dropped {dropped} D stretches shorter than {args.drop_short_d} s")
+    if P.restart_goal_len_s > 0 and hybrid_info is not None:
+        labels, n_rg = hmm_v3.scorer_after_restart(labels, tags, side_of, blocks, hybrid_info["stretches"],
+                                                   P.restart_goal_len_s, P.restart_goal_before_s,
+                                                   P.restart_goal_after_s, P.fps)
+        log(f"[E] {n_rg} restarts that scored at once: {P.restart_goal_len_s} s after the kick = the scorer's possession")
+    if P.goal_lead_s > 0:
+        labels, n_goal = hmm_v3.scorer_before_goals(labels, tags, side_of, blocks, P.goal_lead_s, P.fps,
+                                                    P.goal_lead_shift_s)
+        log(f"[E] {P.goal_lead_s} s before {n_goal} goals = the scoring team's possession")
     data.write_submission(args.out, labels)
     log(f"wrote {args.out}")
     summ = postprocess.summary(labels, blocks, P.fps)
@@ -305,6 +331,11 @@ def main(argv=None):
                     help="settings of the hybrid detector")
     ap.add_argument("--drop-short-d", type=float, default=0.0,
                     help="treat D stretches shorter than this many seconds as play (0 = off)")
+    ap.add_argument("--team-train", nargs="+", metavar="NPZ",
+                    help="train the H/A team model on these OTHER games' answer keys (files from "
+                         "--team-features-out); a file of the game being labelled is skipped")
+    ap.add_argument("--team-features-out", metavar="NPZ",
+                    help="with --external: save this game's team features and its true H/A for --team-train")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--gt")
     ap.add_argument("--n-frames", type=int, help=argparse.SUPPRESS)

@@ -30,6 +30,64 @@ def viterbi_ha(p_home, switch_cost, floor=1e-4):
     return path
 
 
+def scorer_before_goals(labels, tags, side_of, blocks, lead_s, fps=25, shift_s=0.0):
+    """A goal is scored by a shot of the scoring team, so the lead_s seconds before every GOALS tag are that
+    team's possession (H / A), even if they were D (e.g. a penalty kick: the D of the penalty ran straight
+    into the D after the goal). General football rule; own goals (tag text says "own") are left alone.
+    Returns (labels, number of goals used)."""
+    if lead_s <= 0:
+        return labels, 0
+    w = int(round(lead_s * fps))
+    used = 0
+    for g in tags or []:
+        if g.get("code") != "GOALS":
+            continue
+        text = " ".join(t.lower() for _, t in g.get("labels", []))
+        if "own" in text:
+            continue
+        side = side_of(g.get("tags", {}).get("Team", ""))
+        if side not in (0, 1):
+            continue
+        s = int(g["start"]) + int(round(shift_s * fps))      # shift_s > 0: the tag comes before the goal
+        blk = [(a, b) for _, a, b in blocks if a <= s <= b]
+        if not blk:
+            continue
+        a = max(blk[0][0], s - w)
+        labels[a:s] = "H" if side == 0 else "A"
+        used += 1
+    return labels, used
+
+
+def scorer_after_restart(labels, tags, side_of, blocks, stretches, len_s, before_s, after_s, fps=25):
+    """A restart that scores at once (a penalty kick, a direct free kick): the short play between the kick
+    and the goal is shorter than the 3-second rule, so it was joined into D. If a GOALS tag lies from
+    before_s before to after_s after the end of a stoppage (= the kick), the len_s seconds from the kick
+    are the scoring team's possession. Own goals are left alone. Returns (labels, number used)."""
+    if len_s <= 0:
+        return labels, 0
+    goals = []
+    for g in tags or []:
+        if g.get("code") != "GOALS" or "own" in " ".join(t.lower() for _, t in g.get("labels", [])):
+            continue
+        side = side_of(g.get("tags", {}).get("Team", ""))
+        if side in (0, 1):
+            goals.append((int(g["start"]), side))
+    used = 0
+    for x in stretches:
+        if x.get("special"):
+            continue
+        e = int(x["end"])
+        hit = [side for s, side in goals if e - before_s * fps <= s <= e + after_s * fps]
+        if not hit:
+            continue
+        blk = [(a, b) for _, a, b in blocks if a <= e <= b]
+        if not blk:
+            continue
+        labels[e:min(blk[0][1] + 1, e + int(round(len_s * fps)))] = "H" if hit[0] == 0 else "A"
+        used += 1
+    return labels, used
+
+
 def decode_with_dead(dead, p_home, switch_cost, blocks, n_frames, floor=1e-4):
     """Final labels when D is fixed: 'D' where dead, H/A from viterbi_ha in every play stretch,
     'X' outside the graded halves."""

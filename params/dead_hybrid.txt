@@ -30,13 +30,13 @@ kickoff_wrong_max = 2     # キックオフの形: 相手陣地に入ってい�
 kickoff_shape_s = 1       # その形が続く時間。形が崩れた（ハーフラインを越えた）瞬間をキックとする / the kick = when the shape breaks
 kickoff_after_tag_s = 10  # キックオフのタグの終わりからこの秒数まで探す / look this long after the kick-off tag
 kickoff_after_s = 3       # 終了サインが見つからなければ、キックオフのタグの終わりのこの秒数前を蹴った瞬間とする
-kickoff_max_wait_s = 240  # これより長い待ちは特別処理しない / longer waits are not forced
+kickoff_max_wait_s = 600  # これより長い待ちは特別処理しない / longer waits are not forced
 ball_moves_max = 1        # 停止中にボールが動き出すのは1回まで。2回目からプレー中（0 = 使わない）/ ball moves allowed in a stoppage
 ball_move_grace_s = 1     # 停止の始まりからこの秒数の動きは数えない（外に出た時の動き）/ moves this soon after the start are not counted
 allow_unknown = 0         # 0: 不明な状況では停止にしない / "unknown" is never a stoppage
-goal_play_before_s = 10   # ゴールのタグの前この秒数以内にプレー（3人以上が速く走る）があること / play before the goal
+goal_play_before_s = 0   # ゴールのタグの前この秒数以内にプレー（3人以上が速く走る）があること / play before the goal
 goal_team_fast = 3        # ゴール〜キックオフで、片方のチームは「この人数以上が ...
-goal_team_fast_s = 5      # ... この秒数以上速く走る」ことがない / one team never has this many running this long
+goal_team_fast_s = 0      # ... この秒数以上速く走る」ことがない / one team never has this many running this long
 fallback_unknown = 0      # 1: 最低時間に足りないとき「不明」として残す / 0: 他に合う状況がなければ停止にしない
 
 [core | 芯（間違いなく止まっている）]   # core_need 個以上で芯 / core when core_need of these hold
@@ -44,12 +44,12 @@ sign = 現在の D モデルの P(dead) が高い | P(dead) of the current D mod
 sign = ボールが見えていて、10秒間「両チームとも1人以上がボールに近づく」ことがない | ball seen and for 10 s not both teams have a player coming for it | lasting(ball_fresh > 0 and not (n_approach_home >= 1 and n_approach_away >= 1), 10)
 
 [play | プレー中のサイン（これがあれば芯にも D にもしない）]
-sign = キーパーが自分の PA でボールを持っている（パントキックの前など）| a keeper inside his box has the ball (e.g. before a punt) | keeper_ball > 0
+sign = キーパーが自分の PA でボールを持っている（パントキックの前など、持ってから2秒間）| a keeper inside his box has the ball (e.g. before a punt; for 2 s after) | recent(keeper_ball > 0, 2)
 sign = 両チームとも1人以上がダッシュしている（0.5秒）| both teams have a player dashing (0.5 s) | lasting(n_dash_home >= 1 and n_dash_away >= 1, 0.5)
 
 [start | 始まりを探す]
 event = ボールの位置がピッチの外に出た | the ball position went outside the pitch | ball_out > 0
-back_to = 最後に3人以上が速く走っていた時点 | last moment 3+ players ran fast | n_fast >= 3
+back_to = 最後に2人以上が速く走っていた時点 | last moment 2+ players ran fast | n_fast >= 2
 
 [situation スローイン | throw-in]
 min_s = 3      # これより短い停止はこの状況とみなさない / shorter -> not this situation
@@ -114,6 +114,7 @@ end = 歩いている選手が減った | fewer players walk | frac_walk < 0.7
 end = 止まっていたボールが動き出した | the still ball starts to move | ball_moving > 0 and recent(ball_still > 0, 3)
 
 [situation 自陣・中盤のFK | free kick far from goal]
+confirm = FK のタグ | a free-kick tag | tag_fk > 0
 min_s = 4      # これより短い停止はこの状況とみなさない / shorter -> not this situation
 max_s = 40
 confirm = ボールが止まっている | the ball is still | ball_still > 0
