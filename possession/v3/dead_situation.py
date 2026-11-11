@@ -209,11 +209,14 @@ def _kickoff_tags(tags):
     return sorted(ko), sorted(goals)
 
 
-def detect_hybrid(cols, blocks, cfg, tags=None):
+def detect_hybrid(cols, blocks, cfg, tags=None, ko_events=None):
     """Core (e.g. the v2 D model) says WHERE play is stopped; the start and end are then searched around
     it with the situation signs; finally the 3-second rule.
 
-      0. special  (kick-off tags, nearly complete) half start -> first kick-off, and goal -> next kick-off
+      0. special  ko_events given (kick-off preprocessing, pipeline [C2]): [(start, kick, team, kind)] are D
+                  as they are, and the tag-based search below is skipped for that half (a half where
+                  the preprocessing found no kick-off falls back to it). Otherwise:
+                  (kick-off tags, nearly complete) half start -> first kick-off, and goal -> next kick-off
                   are always D, at least until the kick-off shape (each half holds only one team) is
                   reached; the kick is when that shape breaks up. A goal stretch needs play before the goal (back_to within goal_play_before_s)
                   and one team that never has goal_team_fast+ players running fast for goal_team_fast_s. The kick is the first frame inside the kick-off tag where `need` of the
@@ -311,7 +314,19 @@ def detect_hybrid(cols, blocks, cfg, tags=None):
         okk = np.flatnonzero(ok)
         return ks + okk[np.argmin(np.abs(ks + okk - k))]            # nearest moment with the centre visible
 
+    if ko_events is not None:                                     # kick-off preprocessing decided them
+        for s0, k, team, kind in ko_events:
+            if k - s0 > f(st["kickoff_max_wait_s"]) and kind != "goal":
+                skipped.append({"start": s0, "end": k, "why": "キックオフまでが長すぎる"})
+                continue
+            forced[s0:k] = True
+            stretches.append({"start": s0, "end": k, "core": (s0, k), "situation": ko_sit, "score": 1.0,
+                              "scores": [0.0] * len(sits), "start_by": "half start" if kind != "goal" else "goal",
+                              "ended_by": "kick-off (preprocessing)", "first_choice": ko_sit, "why": "",
+                              "special": True, "kick_team": team})
     for _, a, b in blocks:
+        if ko_events and any(a <= k <= b for _, k, _, _ in ko_events):
+            continue                                              # this half: the preprocessing decided
         kos = [(ks, ke) for ks, ke in ko_tags if a <= ks <= b]
         if kos:                                                   # half start -> first kick-off
             k = kick_frame(*kos[0], s0=a)
