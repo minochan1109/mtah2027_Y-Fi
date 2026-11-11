@@ -4,7 +4,9 @@
         --report results/v2_report.txt --dump results/v2_detail.csv
     python -m possession.v2.pipeline_v2 --repo ../more-than-a-hack-2027 --external external/MET-G1 --out results/v2_g1.csv
 
-Same options as version 1 (--external, --dump, --check, --params). --report writes what every
+Same options as version 1 (--external, --dump, --check, --params). --dead-method hybrid decides
+play-stopped with the situation-based detector (params/dead_hybrid.txt) and writes the submission from it. --drop-short-d 3 turns D
+stretches shorter than 3 s into play (H/A decided again). --report writes what every
 module did (players removed, ball rejected by reason, tags used, top features, summary).
 --check is a PIPELINE CHECK ONLY: never compare versions or settings with it.
 """
@@ -90,7 +92,7 @@ def run(args):
 
     # [A] players
     attack = preprocess.attack_sign(tr, blocks, P.fps)
-    px, py, team_mat, rep_a = clean_players.clean_players(tr, attack, P)
+    px, py, team_mat, rep_a = clean_players.clean_players(tr, attack, P, event_mask=tag_policy.event_frames(tags, n, P))
     log(f"[A] clean_players: {rep_a}")
 
     # [B] ball
@@ -112,29 +114,128 @@ def run(args):
     fd = features.dead_features(prep, tags, P)
     fd = pd.concat([fd, features_v2.dead_extra(bq, tag_dead, P)], axis=1)
     Xh, Xa = features_v2.team_features_v2(prep, team_mat, bq, P)
+    # MT-26 clues (11/5, priority high): off unless switched on in --params
+    from . import clue_features
+    if any(getattr(P, k, False) for k in ("clue_score", "clue_backline", "clue_crowd")):
+        per_c = clue_features.team_clues(prep, team_mat, bq, P, tags, side_of)
+        Xh, Xa = clue_features.add_team_clues(Xh, Xa, per_c)
+        log(f"[MT-26] team clues added: {sorted(per_c[0])}")
+    if getattr(P, "clue_align", False):
+        fa = clue_features.align_features(prep, team_mat, P)
+        fd = pd.concat([fd, fa], axis=1)
+        log(f"[MT-26] D clues added: {list(fa.columns)}")
 
     control = pseudo_v2.control_events_v2(prep, team_mat, bq, P)
     y_dead = pseudo_labels.dead_labels(fd, P, control)
     y_team = pseudo_v2.team_labels_v2(control, y_dead, P)
     log(f"[D] pseudo labels: dead={int((y_dead == 1).sum())} alive={int((y_dead == 0).sum())} "
         f"home={int((y_team == 1).sum())} away={int((y_team == 0).sum())}")
-    dm = models.DeadModel(P).fit(fd, y_dead)
+    motion_cols = [c for c in fd.columns if c.startswith(("ball_speed", "ball_flight"))]
+    motion = getattr(P, "dead_ball_motion", True)
+    fd_model = fd if motion else fd.drop(columns=motion_cols)
+    if not motion:
+        log(f"[D] D model without ball motion: dropped {motion_cols}")
+    if not getattr(P, "dead_set_piece_tags", True):
+        tag_cols = [c for c in fd_model.columns if c.startswith(("to_set_piece_s", "in_set_piece_tag",
+                                                                   "tag_to_restart_s", "tag_since_restart_s"))]
+        fd_model = fd_model.drop(columns=tag_cols)
+        log(f"[D] D model without set-piece tags: dropped {tag_cols}")
+    dm = models.DeadModel(P).fit(fd_model, y_dead)
     p_dead = dm.predict(fd)
     log("dead model top coefficients: " + ", ".join(f"{a}={c:+.2f}" for a, c in dm.coefficients()[:6]))
     p_model, _ = model_v2.fit_predict(Xh, Xa, y_team, bq["conf"], P, log=log)
     p_home = 1 / (1 + np.exp(-(_logit(p_model) + tag_logit)))
+    ca, cb = getattr(P, "home_calib_a", 1.0), getattr(P, "home_calib_b", 0.0)   # off unless set in --params
+    if ca != 1.0 or cb != 0.0:
+        p_home = 1 / (1 + np.exp(-(ca * _logit(p_home) + cb)))
+        log(f"[E] P(home) calibrated: a={ca} b={cb}, switch cost {P.cost_switch_team}")
 
     # [E] state model
     log("state model")
     sig = hmm_v2.switch_signal(Xh, P)
+    if getattr(P, "clue_crowd_switch", False):
+        sig = clue_features.crowd_switch_signal(prep, team_mat, bq, P)
+        log(f"[MT-26] switch signal = crowding onset (mean {sig.mean():.3f}, share > 0.5: {(sig > 0.5).mean():.3f})")
     switch_cost = P.cost_switch_team * (1.0 - P.switch_signal_drop * sig)
-    logE = hmm.emissions(p_dead, p_home, P)
-    states = [hmm_v2.viterbi_tv(logE[a:b + 1], P, switch_cost[a:b + 1]) for _, a, b in blocks]
-    labels = postprocess.to_labels(states, n, blocks)
+    hybrid_info = None
+    if args.dead_method == "hybrid":
+        # [D2] play stopped? -- hybrid detector (core from P(dead), start / end from the situation signs,
+        #      3-second rule), then H / A by the time model inside every play stretch (D stays fixed)
+        from . import dead_situation, situation_features as sf
+        cfg = dead_situation.read_config(args.dead_config)
+        bx_t = np.where(bq["status"] == TRUSTED, bq["bx"], np.nan)
+        by_t = np.where(bq["status"] == TRUSTED, bq["by"], np.nan)
+        cols = sf.situation_features(px, py, team_mat, attack, tags, (P.pitch_length, P.pitch_width), P.fps,
+                                     bx_t, by_t, H, valid)
+        cols["p_dead"] = np.asarray(p_dead, float)
+        if getattr(P, "clue_align", False):        # MT-26: usable in params/dead_hybrid*.txt as align_frac / align_drop
+            cols["align_frac"] = np.nan_to_num(fd["align_frac"].to_numpy(float), nan=1.0)
+            cols["align_drop"] = np.nan_to_num(fd["align_drop"].to_numpy(float), nan=0.0)
+        cols["v2_D"] = np.zeros(n)
+        dead_mask, stretches, dropped, dinfo = dead_situation.detect_hybrid(cols, blocks, cfg, tags)
+        sits = cfg["situations"]
+        p_ha = p_home
+        if cfg["settings"].get("soccer_rules", 0) > 0:
+            from . import soccer_rules
+            st_like = {"n": n, "px": px, "py": py, "team_mat": team_mat, "attack": attack, "pitch":
+                       (P.pitch_length, P.pitch_width), "blocks": blocks, "bx": bx_t, "by": by_t, "p_home": p_home}
+            p_ha, _, rep_r = soccer_rules.apply(st_like, dead_mask, stretches, sits, cols)
+            log(f"[E] football rules for H/A: {rep_r}")
+        labels = hmm_v2.decode_with_dead(dead_mask, p_ha, switch_cost, blocks, n, P.prob_floor)
+        by_sit = {}
+        for x in stretches:
+            nm = sits[x["situation"]]["en"]
+            by_sit[nm] = by_sit.get(nm, 0) + 1
+        log(f"[D2] hybrid D ({os.path.basename(args.dead_config)}): {len(stretches)} stretches {by_sit}, "
+            f"{len(dropped)} candidates not used, {sum(1 for x in stretches if x.get('special'))} from kick-off / goal tags")
+        hybrid_info = {"stretches": stretches, "dropped": dropped, "mask": dead_mask}
+    else:
+        logE = hmm.emissions(p_dead, p_home, P)
+        states = [hmm_v2.viterbi_tv(logE[a:b + 1], P, switch_cost[a:b + 1]) for _, a, b in blocks]
+        labels = postprocess.to_labels(states, n, blocks)
+    if args.drop_short_d > 0 and args.dead_method != "hybrid":
+        # D stretches shorter than --drop-short-d seconds are treated as play; H/A is decided again
+        keep = labels == "D"
+        dropped = 0
+        for _, a, b in blocks:
+            m = np.r_[False, keep[a:b + 1], False].astype(np.int8)
+            d = np.diff(m)
+            for s0, e0 in zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1)):
+                if e0 - s0 < P.frames(args.drop_short_d):
+                    keep[a + s0:a + e0] = False
+                    dropped += 1
+        logE = hmm.emissions(np.where(keep, 0.999, 0.001), p_home, P)
+        states = [hmm_v2.viterbi_tv(logE[a:b + 1], P, switch_cost[a:b + 1]) for _, a, b in blocks]
+        labels = postprocess.to_labels(states, n, blocks)
+        log(f"[E] dropped {dropped} D stretches shorter than {args.drop_short_d} s")
     data.write_submission(args.out, labels)
     log(f"wrote {args.out}")
     summ = postprocess.summary(labels, blocks, P.fps)
     log("summary: " + json.dumps({k: round(v, 3) if isinstance(v, float) else v for k, v in summ.items()}))
+
+    if args.save_state:
+        import pickle
+        extra = Xh[[c for c in Xh.columns if c.startswith(("r_own_", "r_opp_", "k_own_", "k_opp_"))
+                    and not c.endswith(("_p0.5", "_f0.5", "_d0.5", "_p1.0", "_f1.0", "_d1.0", "_p2.0", "_f2.0", "_d2.0"))]]
+        state = {"name": name, "n": n, "blocks": blocks, "fps": P.fps, "fd": fd, "home_view": extra,
+                 "p_dead": p_dead, "p_home": p_home, "switch_cost": switch_cost, "labels": labels,
+                 "y_dead": y_dead, "params": {k: getattr(P, k) for k in vars(P)}, "dead_method": args.dead_method,
+                 # player-only data for tools/dead_situations.py (ball not needed)
+                 "px": px.astype(np.float32), "py": py.astype(np.float32), "team_mat": team_mat,
+                 "attack": attack, "tags": tags, "pitch": (P.pitch_length, P.pitch_width),
+                 "H": H.astype(np.float32), "H_valid": valid,       # camera view (what is in the picture)
+                 "bx": np.where(bq["status"] == TRUSTED, bq["bx"], np.nan).astype(np.float32),
+                 "by": np.where(bq["status"] == TRUSTED, bq["by"], np.nan).astype(np.float32),
+                 "external": os.path.abspath(args.external) if args.external else None}
+        if args.external and os.path.isfile(_external_gt(args.external)):
+            state["gt"] = pd.read_csv(_external_gt(args.external))["label"].astype(str).to_numpy()
+            tb = os.path.join(args.external, "truth", "ball.csv")
+            if os.path.isfile(tb):
+                state["true_ball_seen"] = pd.read_csv(tb)["x_m"].notna().to_numpy()
+        os.makedirs(os.path.dirname(os.path.abspath(args.save_state)) or ".", exist_ok=True)
+        with open(args.save_state, "wb") as fh:
+            pickle.dump(state, fh)
+        log(f"wrote {args.save_state}")
 
     if args.dead_debug:
         from . import dead_debug
@@ -192,8 +293,17 @@ def main(argv=None):
     ap.add_argument("--params", help="JSON overriding Params2 fields")
     ap.add_argument("--report", help="text file with what every module did")
     ap.add_argument("--dump", help="per-frame CSV for the debug tools")
+    ap.add_argument("--save-state", help="pickle with features and probabilities for tools/dead_conditions.py")
     ap.add_argument("--dead-debug", help="prefix for the D debug files (why each frame / stretch is D)")
     ap.add_argument("--external", help="another game converted with tools/convert_metrica.py")
+    ap.add_argument("--dead-method", choices=["v2", "hybrid"], default="v2",
+                    help="how play-stopped (D) is decided: v2 = the time model alone (as before), "
+                         "hybrid = the situation-based detector (params/dead_hybrid.txt)")
+    ap.add_argument("--dead-config", default=os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+                    os.path.abspath(__file__)))), "params", "dead_hybrid.txt"),
+                    help="settings of the hybrid detector")
+    ap.add_argument("--drop-short-d", type=float, default=0.0,
+                    help="treat D stretches shorter than this many seconds as play (0 = off)")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--gt")
     ap.add_argument("--n-frames", type=int, help=argparse.SUPPRESS)

@@ -1,0 +1,30 @@
+# D（プレー停止）のアルゴリズム（ブロックごとに1つ）
+#   [日本語の名前 | English name]
+#   start = 式      この式が成り立ったら D が始まる
+#   keep  = 式      （省略可）この式が成り立つ間 D が続く。省略すると start と同じ
+#   end   = 式      （省略可）この式が成り立ったら D が終わる
+#   min_s = 秒      （省略可）これより短い D は消す
+# start = MODEL と書くと「今の v2 の D」になります（基準は自動で入ります）。
+# 組み合わせは「それぞれの D を合わせたもの（どれかが D なら D）」として全部試します。
+
+[ボールアウト | ball out]
+start = last_ball_out == 1
+keep  = last_ball_out == 1 or speed_mean < 2
+end   = ball_seen == 1 and ball_speed > 5
+min_s = 2
+
+[再開タグの前 | before a restart tag]
+start = tag_to_restart_s <= 4 and speed_mean < 2.5
+keep  = tag_to_restart_s > 0.2 and tag_to_restart_s <= 6
+min_s = 2
+
+[みんな歩いてボールが無い | everybody walking, no ball]
+start = lasting(frac_walking >= 0.8, 3) and since_seen > 2
+keep  = frac_walking >= 0.6
+end   = n_sprint >= 3
+min_s = 3
+
+[ゴールの後 | after a goal]
+start = tag_since_goal_s < 5
+keep  = tag_since_goal_s < 60 and speed_mean < 2.5
+min_s = 5

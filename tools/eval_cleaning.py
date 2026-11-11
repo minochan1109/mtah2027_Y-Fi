@@ -30,8 +30,32 @@ from possession import data, preprocess  # noqa: E402
 from possession.v2.ball_quality import assess_ball  # noqa: E402
 from possession.v2.clean_players import clean_players  # noqa: E402
 from possession.v2.config_v2 import Params2  # noqa: E402
+from possession.v2.tag_policy import event_frames  # noqa: E402
+from possession.v2.tag_policy import load_tags  # noqa: E402
 
 ERR_NONE, ERR_REMOVED, ERR_FALSE, ERR_SWAP_IN, ERR_SWAP_OUT = 0, 1, 2, 3, 4
+
+
+def truth_keeper_gt(folder, cfg, P, n):
+    """Goalkeeper boxes of each team made from the TRUTH tracking: {team: (n, 4) x1,y1,x2,y2 in metres}.
+
+    The keeper of a team is the true slot closest to a goal line on average in the first minutes
+    (the same rule make_eval_data.py uses for its keeper swaps). The box is a square of side
+    P.det_box_m around the true position; NaN where the true keeper is not tracked."""
+    stem = os.path.join(folder, "truth", cfg["stem"])
+    tt = data.load_tracking(stem + "_atd.xml", stem + "_atd.txt", n, tuple(cfg["pitch"]))
+    L, half = cfg["pitch"][0], P.det_box_m / 2
+    gt = {}
+    for k in (0, 1):
+        cols = np.flatnonzero(tt.team == k)
+        x0 = tt.px[:3000, cols]
+        with np.errstate(invalid="ignore"):
+            m = np.where(np.isfinite(x0).any(axis=0),
+                         np.nanmean(np.minimum(np.abs(x0), np.abs(L - x0)), axis=0), np.inf)
+        c = cols[int(np.argmin(m))]
+        x, y = tt.px[:, c].astype(np.float64), tt.py[:, c].astype(np.float64)
+        gt[k] = np.stack([x - half, y - half, x + half, y + half], axis=1)
+    return gt
 
 
 def evaluate(folder, params, tol):
@@ -48,7 +72,10 @@ def evaluate(folder, params, tol):
     blocks = [tuple(b) for b in cfg["blocks"]]
     attack = preprocess.attack_sign(tr, blocks, P.fps)
 
-    cpx, cpy, team_mat, _ = clean_players(tr, attack, P)
+    keeper_gt = truth_keeper_gt(folder, cfg, P, n) if P.use_keeper_gt else None
+    tag_file = os.path.join(folder, cfg.get("input_dir", ""), cfg["stem"] + "_smart_tagging.xml")
+    ev = event_frames(load_tags(tag_file, P.fps), n, P) if os.path.isfile(tag_file) else None
+    cpx, cpy, team_mat, rep = clean_players(tr, attack, P, keeper_gt=keeper_gt, event_mask=ev)
     bq, _ = assess_ball(tr.bx, tr.by, cpx, cpy, P)
 
     tbx, tby = err["true_bx"], err["true_by"]
@@ -81,6 +108,8 @@ def evaluate(folder, params, tol):
         "real_removed": (real & ~kept).sum() / max(1, real.sum()),
         "swaps_fixed": (swap & kept & (team_mat == tt)).sum() / max(1, swap.sum()),
         "team_correct": (real & kept & (team_mat == tt)).sum() / max(1, (real & kept).sum()),
+        "gt_team_fixed": rep.get("gt_team_fixed", 0),    # only the full version (clean_players_full.py) has these
+        "gt_dup_removed": rep.get("gt_dup_removed", 0),
     }
     return ball, players
 
@@ -111,6 +140,9 @@ def main(argv=None):
     for name, _, p in rows:
         print(f"{name:<9}" + "".join(f"{p[k]:14.3f}" for k in keys_p))
     print("higher is better except false_kept, real_lost, real_removed")
+    for name, _, p in rows:
+        print(f"{name:<9}keeper GT: team fixed {p['gt_team_fixed']} detections, "
+              f"duplicates removed {p['gt_dup_removed']}")
 
 
 if __name__ == "__main__":

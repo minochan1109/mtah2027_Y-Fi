@@ -57,12 +57,15 @@ def dead_labels(dead_feat, P, control=None):
     bspeed = np.nan_to_num(dead_feat["ball_speed"].values, nan=0.0)
     out_recent = (dead_feat["last_ball_out"].values > 0)
     before_sp = dead_feat["to_set_piece_s"].values < P.set_piece_lead_s
-    ball_still = (since > 2.0) | (bspeed < 0.5)
+    if not getattr(P, "dead_set_piece_tags", True):     # MT-11 11/5: no set-piece tags as a reason
+        before_sp = np.zeros(len(before_sp), bool)
+    motion = getattr(P, "dead_ball_motion", True)   # False: never use how the ball moves (MT-11, 11/4)
+    ball_still = (since > 2.0) | ((bspeed < 0.5) if motion else False)
     y = np.full(T, -1, np.int8)
     y[calm & (out_recent | before_sp | ball_still)] = 1
     inside = dead_feat["last_ball_out"].values == 0
     travelling = (dead_feat["ball_seen"].values > 0) & (bspeed > 3.0) & inside
-    alive = travelling | (ms > P.alive_run_speed)
+    alive = (travelling if motion else False) | (ms > P.alive_run_speed)
     if control is not None:
         alive |= control >= 0
     y[alive & (y != 1)] = 0
