@@ -72,6 +72,43 @@ def _paths(args, P):
     return args.game, paths, n, blocks
 
 
+def kickoff_stretches(prep, team_mat, bq, tags, side_of, H, valid, blocks, P):
+    """Kick-off preprocessing. Returns [(start, kick, team, kind)] and a short report.
+
+    start = the goal moment (goal -> kick-off) or the half start (first kick-off of a half);
+    kick = the frame play restarts; team = 0 (H) / 1 (A) kicking, -1 unknown.
+    """
+    try:                                              # 髙橋's module: v2 if pushed there, else the v3 copy
+        from ..v2 import kickoff
+    except ImportError:
+        from . import kickoff
+    events, _ = kickoff.find_kickoffs(prep, team_mat, bq, tags, P, side_of)
+    def half_of(t):                                   # frame -> half number (Laws: each half starts with a kick-off)
+        for h, a, b in blocks:
+            if a <= t <= b:
+                return h
+        return 0
+    sets = kickoff.find_goal_kickoff_sets(events, prep, team_mat, bq, P, tags=tags, side_of=side_of,
+                                          half_of=half_of)        # players only, no camera
+    n_rej = kickoff.confirm_kickoffs_with_goals(events, sets)
+    goal_of = {r["kickoff_frame"]: r["goal_frame"] for r in sets if r["kickoff_frame"] is not None}
+    out = []
+    for _, a, b in blocks:
+        ks = sorted((e for e in events if e["found"] and a <= e["kickoff_frame"] <= b),
+                    key=lambda e: e["kickoff_frame"])
+        for i, e in enumerate(ks):
+            k = e["kickoff_frame"]
+            g = goal_of.get(k)
+            if g is not None and a <= g < k:
+                out.append((int(g), int(k), int(e["team"]), "goal"))
+            elif i == 0:
+                out.append((int(a), int(k), int(e["team"]), "half start"))
+    rep = {"kick-offs found": sum(e["found"] for e in events), "of tags/goals": len(events),
+           "turned down (no goal before)": n_rej,
+           "D stretches": [(kind, round((k - s) / P.fps, 1)) for s, k, _, kind in out]}
+    return out, rep
+
+
 def run(args):
     P = Params3()
     if args.params:
@@ -93,7 +130,7 @@ def run(args):
 
     # [A] players
     attack = preprocess.attack_sign(tr, blocks, P.fps)
-    px, py, team_mat, rep_a = clean_players.clean_players(tr, attack, P)
+    px, py, team_mat, rep_a = clean_players.clean_players(tr, attack, P, event_mask=tag_policy.event_frames(tags, n, P))  # same call as v2
     log(f"[A] clean_players: {rep_a}")
 
     # [B] ball
@@ -109,6 +146,13 @@ def run(args):
     # [C] tags
     tag_logit, tag_dead, rep_c = tag_policy.tag_evidence(tags, side_of, n, P)
     log(f"[C] tag_policy: {rep_c}")
+
+    # [C2] kick-offs (preprocessing, 髙橋's kickoff.py): the exact kick and the goal before it, from the players.
+    #      Used by the hybrid D detector instead of its own tag-based kick-off search.
+    ko_events = None
+    if getattr(P, "kickoff_pre", True) and args.dead_method == "hybrid":
+        ko_events, rep_k = kickoff_stretches(prep, team_mat, bq, tags, side_of, H, valid, blocks, P)
+        log(f"[C2] kick-offs: {rep_k}")
 
     # [D] features, pseudo labels, models
     log("features")
@@ -173,7 +217,7 @@ def run(args):
             cols["align_frac"] = np.nan_to_num(fd["align_frac"].to_numpy(float), nan=1.0)
             cols["align_drop"] = np.nan_to_num(fd["align_drop"].to_numpy(float), nan=0.0)
         cols["v2_D"] = np.zeros(n)
-        dead_mask, stretches, dropped, dinfo = dead_situation.detect_hybrid(cols, blocks, cfg, tags)
+        dead_mask, stretches, dropped, dinfo = dead_situation.detect_hybrid(cols, blocks, cfg, tags, ko_events)
         sits = cfg["situations"]
         p_ha = p_home
         if cfg["settings"].get("soccer_rules", 0) > 0:
@@ -220,7 +264,7 @@ def run(args):
                     and not c.endswith(("_p0.5", "_f0.5", "_d0.5", "_p1.0", "_f1.0", "_d1.0", "_p2.0", "_f2.0", "_d2.0"))]]
         state = {"name": name, "n": n, "blocks": blocks, "fps": P.fps, "fd": fd, "home_view": extra,
                  "p_dead": p_dead, "p_home": p_home, "switch_cost": switch_cost, "labels": labels,
-                 "y_dead": y_dead, "params": {k: getattr(P, k) for k in vars(P)}, "dead_method": args.dead_method,
+                 "y_dead": y_dead, "params": {k: getattr(P, k) for k in vars(P)}, "ko_events": ko_events, "dead_method": args.dead_method,
                  # player-only data for tools/dead_situations.py (ball not needed)
                  "px": px.astype(np.float32), "py": py.astype(np.float32), "team_mat": team_mat,
                  "attack": attack, "tags": tags, "pitch": (P.pitch_length, P.pitch_width),
