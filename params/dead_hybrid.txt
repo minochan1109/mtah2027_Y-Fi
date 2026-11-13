@@ -11,7 +11,7 @@
 [settings]
 need = 2                  # 確認・終了サインは5つのうちいくつ / of the 5 confirm / end signs
 core_need = 1             # 芯のサインはいくつ満たせばよいか / how many core signs must hold
-core_min_s = 1.25         # 芯はこれ以上続くこと / the core must last this long
+core_min_s = 1.0          # 芯はこれ以上続くこと / the core must last this long
 core_merge_s = 1          # 芯の間のすき間がこれ未満ならつなぐ / join cores closer than this
 classify_s = 6            # 状況を決めるために見る最短の時間 / at least this long is used to decide the situation
 classify_min = 0.25       # これ未満なら「不明」/ below this share the situation is "unknown"

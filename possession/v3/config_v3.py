@@ -43,13 +43,40 @@ class Params3(Params2):
     home_calib_a: float = 1.0            # P(home) calibration sigmoid(a * logit(p) + b); 1 / 0 = off
     home_calib_b: float = 0.0
     restart_team_delay_s: float = 2.0   # delay only the restarting team's H/A evidence
-    cost_switch_team: float = 13.0      # H <-> A switch cost in play before recovery evidence
+    cost_switch_team: float = 12.0      # H <-> A switch cost in play before recovery evidence
     switch_signal_mid: float = 0.8      # recovery onset at the midpoint of the switch signal
     switch_signal_drop: float = 0.75    # maximum fractional discount when recovery is clear
     unseen_ball_switch_cost_scale: float = 1.5  # keep the last team when the ball position is unreliable
     ball_flight_switch_cost_scale: float = 1.25  # keep possession through tracked ball flight
     ball_flight_switch_tail_s: float = 0.12     # continue the flight penalty for this long
-    switch_model: bool = False           # True: the switch signal = P(switch) learned from other games (--team-train)
+    final_drop_short_s: float = 1.0      # >0: last pass of drop_unsupported_spells with this length ...
+    final_drop_touch_m: float = 1.5      # ... and this touch distance
+    force_d_min_s: float = 5.0           # >0: play with P(dead) >= force_d_pdead for this long becomes D
+    force_d_pdead: float = 0.8
+    unseen_d_min_s: float = 2.5          # >0: play with no ball detected this long and mean P(dead) >= unseen_d_pdead = D
+    unseen_d_pdead: float = 0.4
+    undo_d_seen_min: float = 0.2         # >0: a D stretch with the ball detected in at least this share ...
+    undo_d_pdead_max: float = 0.6        # ... and mean P(dead) at most this goes back to play (previous team)
+    undo_d_max_s: float = 15.0           # ... only for D stretches at most this long
+    d_edge_trim_max_s: float = 3.0       # >0: trim up to this long off each end of a D where play signs remain
+    d_edge_pdead_max: float = 0.3        # ... play sign = P(dead) at most this ...
+    d_edge_win_s: float = 0.5            # ... and the ball seen half the time, both averaged over this window
+    flip_short_s: float = 1.5      # short H/A spell between the other team's spells ...
+    flip_short_conf: float = 0.5   # ... that the team model does not back -> the other team
+    run_reopen_n: float = 1.5        # >0: players running (mean count over the window) to reopen a D middle
+    run_reopen_speed: float = 4.0    # a player is running above this speed (m/s)
+    run_reopen_win_s: float = 4.0    # window for the running count and the D prob
+    run_reopen_pdead: float = 0.5    # ... with the mean D prob at most this
+    run_reopen_min_s: float = 2.0    # ... lasting at least this long
+    drop_tiny_s: float = 0.5         # >0: H/A spells shorter than this between the other team's spells -> that team
+    sandwich_d_s: float = 15.0       # >0: H/A spell shorter than this between two D stretches ...
+    sandwich_d_conf: float = 0.5     # ... not backed by the team model (mean prob <= this) -> D
+    shot_fix_speed: float = 0.0          # >0: ball this fast (m/s) flying at a goal = shot of the attacking team
+    shot_fix_dist_m: float = 30.0        # ... from at most this far from the goal
+    shot_fix_angle_deg: float = 20.0     # ... heading within this angle of the goal centre
+    shot_fix_pre_s: float = 0.5          # ... and this long before the shot is also that team's
+    shot_fix_whole_spell: bool = False   # True: flip the whole predicted possession holding the shot
+    switch_model: bool = False          # True: the switch signal = P(switch) learned from other games (--team-train)
     switch_model_win_s: float = 0.4      # "switch moment" = within this long of a true H<->A switch
     switch_model_scale: float = 2.0      # signal = min(1, scale * P(switch))
     switch_evidence_max_s: float = 1.6   # a possession this short or shorter ... (0 = off)

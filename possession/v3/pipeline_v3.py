@@ -404,6 +404,186 @@ def run(args):
             labels, n_extended = hmm_v3.restore_repeated_contact_turnovers(
                 labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps, extended=True)
             log(f"[E] {n_extended} longer turnovers restored from repeated contact")
+        fdr = getattr(P, "final_drop_short_s", 0.0)
+        if fdr > 0:
+            # last pass: a short possession between two of the other team's, in which that team never
+            # comes within final_drop_touch_m of the (trusted) ball nearer than every opponent, is dropped
+            labels, n_fdr = hmm_v3.drop_unsupported_spells(labels, px, py, team_mat, bx_t, by_t,
+                                                           fdr, P.final_drop_touch_m, P.fps)
+            log(f"[E] {n_fdr} short possessions without a touch dropped (last pass)")
+        fd_s = getattr(P, "force_d_min_s", 0.0)
+        if fd_s > 0:
+            # play in which P(dead) stays high this long is a stoppage the situation rules missed
+            n_fd = 0
+            for s, e in preprocess.run_lengths((p_dead >= P.force_d_pdead) & np.isin(labels, ["H", "A"])):
+                if e - s >= fd_s * P.fps:
+                    labels[s:e] = "D"; n_fd += 1
+            log(f"[D2] {n_fd} play stretches with P(dead) >= {P.force_d_pdead} for {fd_s} s made D")
+        ud_s = getattr(P, "unseen_d_min_s", 0.0)
+        if ud_s > 0:
+            # play with no ball detected this long while P(dead) leans to stopped is a stoppage too
+            seen_u = bq["status"] == TRUSTED
+            n_un = 0
+            for s, e in preprocess.run_lengths(~seen_u & np.isin(labels, ["H", "A"])):
+                if e - s >= ud_s * P.fps and p_dead[s:e].mean() >= P.unseen_d_pdead:
+                    labels[s:e] = "D"; n_un += 1
+            log(f"[D2] {n_un} unseen-ball play stretches with P(dead) >= {P.unseen_d_pdead} made D")
+        us = getattr(P, "undo_d_seen_min", 0.0)
+        if us > 0:
+            # a D stretch in which the ball is still detected and P(dead) stays low is play missed:
+            # it goes back to the team that had the ball before it
+            seen_t = bq["status"] == TRUSTED
+            n_ud = 0
+            for s, e in preprocess.run_lengths(labels == "D"):
+                if (e - s > P.undo_d_max_s * P.fps or seen_t[s:e].mean() < us
+                        or p_dead[s:e].mean() > P.undo_d_pdead_max):
+                    continue
+                if s > 0 and labels[s - 1] in ("H", "A"):
+                    labels[s:e] = labels[s - 1]
+                elif e < n and labels[e] in ("H", "A"):
+                    labels[s:e] = labels[e]
+                else:
+                    continue
+                n_ud += 1
+            log(f"[D2] {n_ud} stoppages with the ball still seen and low P(dead) put back to play")
+        et = getattr(P, "d_edge_trim_max_s", 0.0)
+        if et > 0:
+            # the first / last moments of a D in which the ball is still seen and P(dead) is low are
+            # play: the D starts later / ends earlier (at most d_edge_trim_max_s each side)
+            w = int(P.d_edge_win_s * P.fps) | 1
+            seen_w = pd.Series((bq["status"] == TRUSTED).astype(float)).rolling(w, center=True, min_periods=1).mean().to_numpy()
+            pd_w = pd.Series(p_dead).rolling(w, center=True, min_periods=1).mean().to_numpy()
+            playish = (seen_w >= 0.5) & (pd_w <= P.d_edge_pdead_max)
+            cap = int(et * P.fps)
+            n_et = 0
+            for s, e in preprocess.run_lengths(labels == "D"):
+                k = s
+                while k < e and playish[k] and k - s < cap:
+                    k += 1
+                k2 = e
+                while k2 > k and playish[k2 - 1] and e - k2 < cap:
+                    k2 -= 1
+                if k2 <= k:
+                    continue                      # the whole D looks like play: left to undo_d
+                if k > s and s > 0 and labels[s - 1] in ("H", "A"):
+                    labels[s:k] = labels[s - 1]; n_et += 1
+                if k2 < e and e < n and labels[e] in ("H", "A"):
+                    labels[k2:e] = labels[e]; n_et += 1
+            log(f"[D2] {n_et} stoppage edges trimmed where play signs remain")
+        sv = getattr(P, "shot_fix_speed", 0.0)
+        if sv > 0:
+            # a fast ball flying at a goal from near it is a shot of the team attacking that goal
+            # (a team does not shoot at its own goal), so that team has the ball during the shot
+            Lp, Wp = P.pitch_length, P.pitch_width
+            hb = max(1, int(0.12 * P.fps))
+            with np.errstate(invalid="ignore"):
+                vx = (np.r_[bx_t[hb:], np.full(hb, np.nan)] - np.r_[np.full(hb, np.nan), bx_t[:-hb]]) / (2 * hb / P.fps)
+                vy = (np.r_[by_t[hb:], np.full(hb, np.nan)] - np.r_[np.full(hb, np.nan), by_t[:-hb]]) / (2 * hb / P.fps)
+            spd = np.hypot(vx, vy)
+            att_hi = np.where(attack[:, 0] > 0, 0, 1)             # team attacking the x = L goal
+            shot_team = np.full(n, -1, np.int8)
+            cos_max = np.cos(np.radians(P.shot_fix_angle_deg))
+            for gx, team in ((Lp, att_hi), (0.0, 1 - att_hi)):
+                tx, ty = gx - bx_t, Wp / 2 - by_t
+                dist = np.hypot(tx, ty)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    cosang = (vx * tx + vy * ty) / (spd * dist)
+                ok = (spd >= sv) & (dist <= P.shot_fix_dist_m) & (cosang >= cos_max)
+                shot_team[np.nan_to_num(ok, nan=0).astype(bool)] = team[np.nan_to_num(ok, nan=0).astype(bool)]
+            pre = int(P.shot_fix_pre_s * P.fps)
+            n_sf = 0
+            whole = getattr(P, "shot_fix_whole_spell", False)
+            for k in (0, 1):
+                wrong_lab, right_lab = ("A", "H") if k == 0 else ("H", "A")
+                for s, e in preprocess.run_lengths(shot_team == k):
+                    if e - s < 2:
+                        continue
+                    if whole:
+                        # the predicted team would be shooting at its own goal: the whole possession
+                        # (the run of that label holding the shot) belongs to the other team
+                        mid = s + (e - s) // 2
+                        if labels[mid] != wrong_lab:
+                            continue
+                        a, b = mid, mid
+                        while a > 0 and labels[a - 1] == wrong_lab:
+                            a -= 1
+                        while b < n and labels[b] == wrong_lab:
+                            b += 1
+                        labels[a:b] = right_lab
+                        n_sf += 1
+                        continue
+                    s2 = max(0, s - pre)
+                    seg = labels[s2:e]
+                    wrong = seg == wrong_lab
+                    if wrong.any():
+                        n_sf += 1
+                        seg[wrong] = right_lab
+            log(f"[E] {n_sf} shots at a goal given to the attacking team")
+        fs = getattr(P, "flip_short_s", 0.0)
+        if fs > 0:
+            # a short H/A spell between two spells of the other team that the team model itself
+            # does not back (mean prob of that team <= flip_short_conf) is a blip: give it to the other team
+            n_fl = 0
+            bounds = np.flatnonzero(labels[1:] != labels[:-1]) + 1
+            starts = np.r_[0, bounds]; ends = np.r_[bounds, n]
+            for i in range(1, len(starts) - 1):
+                a, b = starts[i], ends[i]; lab = labels[a]
+                if lab not in ("H", "A") or b - a >= fs * P.fps:
+                    continue
+                other = "A" if lab == "H" else "H"
+                if labels[a - 1] != other or labels[b] != other:
+                    continue
+                conf = p_home[a:b].mean() if lab == "H" else 1 - p_home[a:b].mean()
+                if conf <= P.flip_short_conf:
+                    labels[a:b] = other; n_fl += 1
+            log(f"[F] {n_fl} short unbacked spells given to the surrounding team")
+        rm = getattr(P, "run_reopen_n", 0.0)
+        if rm > 0:
+            # inside a stoppage, a stretch where several players keep running (and the D model is unsure)
+            # is play: give it to the team that had the ball before the stoppage
+            kk = max(1, int(0.48 * P.fps))
+            with np.errstate(invalid="ignore"):
+                vv = np.hypot(px[kk:] - px[:-kk], py[kk:] - py[:-kk]) / (kk / P.fps)
+                nrun = np.r_[np.sum(vv > P.run_reopen_speed, 1), np.zeros(kk)].astype(float)
+            w = max(1, int(P.run_reopen_win_s * P.fps))
+            nr_w = pd.Series(nrun[:n]).rolling(w, center=True, min_periods=1).mean().to_numpy()
+            pd_w = pd.Series(p_dead).rolling(w, center=True, min_periods=1).mean().to_numpy()
+            run_sig = (nr_w >= rm) & (pd_w <= P.run_reopen_pdead)
+            n_ro = 0
+            for a, b in preprocess.run_lengths(labels == "D"):
+                if a == 0 or labels[a - 1] not in ("H", "A"):
+                    continue
+                for c, d in preprocess.run_lengths(run_sig[a:b]):
+                    c, d = a + c, a + d
+                    if c == a or d == b or d - c < P.run_reopen_min_s * P.fps:
+                        continue
+                    labels[c:d] = labels[a - 1]; n_ro += 1
+            log(f"[R] {n_ro} stoppage middles with players running reopened as play")
+        tiny = getattr(P, "drop_tiny_s", 0.0)
+        if tiny > 0:
+            # a sub-second H/A spell between two spells of the other team is not a possession
+            bounds = np.flatnonzero(labels[1:] != labels[:-1]) + 1
+            starts = np.r_[0, bounds]; ends = np.r_[bounds, n]
+            n_ti = 0
+            for i in range(1, len(starts) - 1):
+                a, b = starts[i], ends[i]
+                if labels[a] in ("H", "A") and b - a < tiny * P.fps and labels[a - 1] == labels[b]                         and labels[b] in ("H", "A") and labels[b] != labels[a]:
+                    labels[a:b] = labels[b]; n_ti += 1
+            log(f"[T] {n_ti} sub-second spells between the other team's spells removed")
+        sdw = getattr(P, "sandwich_d_s", 0.0)
+        if sdw > 0:
+            # a short H/A spell between two stoppages that the team model does not back is part of the stoppage
+            bounds = np.flatnonzero(labels[1:] != labels[:-1]) + 1
+            starts = np.r_[0, bounds]; ends = np.r_[bounds, n]
+            n_sw = 0
+            for i in range(1, len(starts) - 1):
+                a, b = starts[i], ends[i]; lab = labels[a]
+                if lab not in ("H", "A") or b - a >= sdw * P.fps or labels[a - 1] != "D" or labels[b] != "D":
+                    continue
+                conf = p_home[a:b].mean() if lab == "H" else 1 - p_home[a:b].mean()
+                if conf <= P.sandwich_d_conf:
+                    labels[a:b] = "D"; n_sw += 1
+            log(f"[S] {n_sw} short unbacked spells between stoppages made part of the stoppage")
     data.write_submission(args.out, labels)
     log(f"wrote {args.out}")
     summ = postprocess.summary(labels, blocks, P.fps)
