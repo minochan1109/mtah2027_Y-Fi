@@ -199,11 +199,39 @@ def run(args):
                                                                    "tag_to_restart_s", "tag_since_restart_s"))]
         fd_model = fd_model.drop(columns=tag_cols)
         log(f"[D] D model without set-piece tags: dropped {tag_cols}")
-    dm = models.DeadModel(P).fit(fd_model, y_dead)
+    if args.team_features_out:
+        # this external game's D features and its true D, for --team-train with dead_external
+        dpath = team_external.dead_path(args.team_features_out)
+        tb = os.path.join(args.external, "truth", "ball.csv")
+        tseen = pd.read_csv(tb)["x_m"].notna().to_numpy() if os.path.isfile(tb) else None
+        team_external.save_dead_features(dpath, name, fd_model, gt_ext, tseen)
+        log(f"wrote {dpath} (D features + true D of {name})")
+    if getattr(P, "dead_external", False) and args.team_train:
+        # P(dead) learned from OTHER games' true D only (no pseudo labels of this game)
+        dm = team_external.fit_dead(fd_model, P, args.team_train, name, log=log)
+    else:
+        dm = models.DeadModel(P).fit(fd_model, y_dead)
     p_dead = dm.predict(fd)
     log("dead model top coefficients: " + ", ".join(f"{a}={c:+.2f}" for a, c in dm.coefficients()[:6]))
     if args.team_train:
         p_model = team_external.fit_predict(Xh, Xa, P, args.team_train, name, log=log)
+        if getattr(P, "team_self_train_conf", 0) > 0:
+            p_model = team_external.self_train(Xh, Xa, P, args.team_train, name, p_model, log=log)
+        w_ps = getattr(P, "team_blend_pseudo", 0.0)
+        if w_ps > 0:
+            p_ps, _ = model_v2.fit_predict(Xh, Xa, y_team, bq["conf"], P, log=log)
+            p_model = (1 - w_ps) * p_model + w_ps * p_ps
+            log(f"[D] team P(home) blended with this game's pseudo-label model (weight {w_ps})")
+        win =int(round(getattr(P, "team_smooth_s", 0.0) * P.fps)) | 1
+        if win > 1:
+            unseen_win = int(round(P.team_smooth_unseen_s * P.fps)) | 1
+            raw = pd.Series(p_model)
+            p_model = raw.rolling(win, center=True, min_periods=1).mean().to_numpy()
+            if unseen_win != win:
+                p_unseen = raw.rolling(unseen_win, center=True, min_periods=1).mean().to_numpy()
+                p_model = np.where(bq["status"] == TRUSTED, p_model, p_unseen)
+            log(f"[D] team model P(home) averaged over {win} frames with trusted ball, "
+                f"{unseen_win} otherwise")
     else:
         p_model, _ = model_v2.fit_predict(Xh, Xa, y_team, bq["conf"], P, log=log)
     p_home = 1 / (1 + np.exp(-(_logit(p_model) + tag_logit)))
@@ -218,6 +246,9 @@ def run(args):
     if getattr(P, "clue_crowd_switch", False):
         sig = clue_features.crowd_switch_signal(prep, team_mat, bq, P)
         log(f"[MT-26] switch signal = crowding onset (mean {sig.mean():.3f}, share > 0.5: {(sig > 0.5).mean():.3f})")
+    if getattr(P, "switch_model", False) and args.team_train:
+        p_sw = team_external.fit_predict_switch(Xh, P, args.team_train, name, log=log)
+        sig = np.clip(P.switch_model_scale * p_sw, 0.0, 1.0)
     switch_cost = P.cost_switch_team * (1.0 - P.switch_signal_drop * sig)
     hybrid_info = None
     if args.dead_method == "hybrid":
@@ -227,6 +258,10 @@ def run(args):
         cfg = dead_situation.read_config(args.dead_config)
         bx_t = np.where(bq["status"] == TRUSTED, bq["bx"], np.nan)
         by_t = np.where(bq["status"] == TRUSTED, bq["by"], np.nan)
+        # Without a trusted ball position, require stronger evidence to change teams.
+        switch_cost *= np.where(np.isfinite(bx_t), 1.0, P.unseen_ball_switch_cost_scale)
+        switch_cost *= hmm_v3.flight_switch_multiplier(
+            bq["flight"], np.isfinite(bx_t), P.ball_flight_switch_cost_scale, P.ball_flight_switch_tail_s, P.fps)
         cols = sf.situation_features(px, py, team_mat, attack, tags, (P.pitch_length, P.pitch_width), P.fps,
                                      bx_t, by_t, H, valid)
         cols["p_dead"] = np.asarray(p_dead, float)
@@ -235,6 +270,16 @@ def run(args):
             cols["align_drop"] = np.nan_to_num(fd["align_drop"].to_numpy(float), nan=0.0)
         cols["v2_D"] = np.zeros(n)
         dead_mask, stretches, dropped, dinfo = dead_situation.detect_hybrid(cols, blocks, cfg, tags, ko_events)
+        if P.recover_short_ball_out:
+            n_out = dead_situation.recover_short_ball_out(
+                dead_mask, bx_t, by_t, blocks, tags, (P.pitch_length, P.pitch_width), P.fps)
+            log(f"[D2] {n_out} short ball-out stops recovered")
+        if P.stop_control_search_s > 0:
+            contact = hmm_v3._ball_contact_team(px, py, team_mat, bx_t, by_t, 1.4, 0.4, round(0.12 * P.fps))
+            moving = (cols["ball_moving"] > 0) & (cols["ball_out"] == 0)
+            n_delayed = dead_situation.delay_stops_during_control(
+                dead_mask, dinfo["forced"], blocks, p_home, contact, moving, P.stop_control_search_s, P.fps)
+            log(f"[D2] {n_delayed} stoppage starts delayed by continuing control")
         sits = cfg["situations"]
         p_ha = p_home
         if cfg["settings"].get("soccer_rules", 0) > 0:
@@ -243,7 +288,30 @@ def run(args):
                        (P.pitch_length, P.pitch_width), "blocks": blocks, "bx": bx_t, "by": by_t, "p_home": p_home}
             p_ha, _, rep_r = soccer_rules.apply(st_like, dead_mask, stretches, sits, cols)
             log(f"[E] football rules for H/A: {rep_r}")
-        labels = hmm_v3.decode_with_dead(dead_mask, p_ha, switch_cost, blocks, n, P.prob_floor)
+        p_decode = hmm_v3.support_contact_team(
+            p_ha, px, py, team_mat, bx_t, by_t, P.sustained_contact_log_odds, P.fps)
+        labels = hmm_v3.decode_with_dead(dead_mask, p_decode, switch_cost, blocks, n, P.prob_floor)
+        if getattr(P, "switch_evidence_max_s", 0) > 0:
+            labels, n_ev = hmm_v3.drop_unsupported_spells(labels, px, py, team_mat, bx_t, by_t,
+                                                          P.switch_evidence_max_s, P.switch_evidence_m, P.fps)
+            log(f"[E] {n_ev} possessions of <= {P.switch_evidence_max_s} s without a touch of that team: "
+                f"given to the team before")
+        labels, n_advanced = hmm_v3.advance_confirmed_turnovers(
+            labels, px, py, team_mat, bx_t, by_t, P.turnover_backtrack_s, P.turnover_control_s, P.fps)
+        log(f"[E] {n_advanced} H/A switches moved back to sustained control")
+        if P.restore_brief_turnovers:
+            labels, n_restored = hmm_v3.restore_brief_turnovers(
+                labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps)
+            log(f"[E] {n_restored} brief possessions restored from control by both teams")
+        labels, n_slowdown = hmm_v3.advance_turnovers_at_ball_slowdown(
+            labels, px, py, team_mat, bx_t, by_t, P.turnover_slowdown_backtrack_s, P.fps)
+        log(f"[E] {n_slowdown} H/A switches moved back to ball slowdowns")
+        labels, n_redirect = hmm_v3.delay_turnovers_at_ball_redirect(
+            labels, px, py, team_mat, bx_t, by_t, P.turnover_redirect_search_s, P.fps)
+        log(f"[E] {n_redirect} H/A switches delayed to ball redirections")
+        labels, n_merged = hmm_v3.merge_weak_turnovers(
+            labels, p_ha, px, py, team_mat, bx_t, by_t, P.weak_turnover_merge_s, P.fps)
+        log(f"[E] {n_merged} unsupported brief reversals merged")
         by_sit = {}
         for x in stretches:
             nm = sits[x["situation"]]["en"]
@@ -279,6 +347,63 @@ def run(args):
         labels, n_goal = hmm_v3.scorer_before_goals(labels, tags, side_of, blocks, P.goal_lead_s, P.fps,
                                                     P.goal_lead_shift_s)
         log(f"[E] {P.goal_lead_s} s before {n_goal} goals = the scoring team's possession")
+    if hybrid_info is not None:
+        contact = hmm_v3._ball_contact_team(px, py, team_mat, bx_t, by_t, 1.4, 0.4, round(0.12 * P.fps))
+        labels, n_restarted = hmm_v3.advance_controlled_restarts(
+            labels, p_ha, contact, hybrid_info["stretches"], P.fps)
+        log(f"[D2] {n_restarted} stoppage ends advanced by control from the next team")
+        if P.restore_brief_turnovers:
+            labels, n_recovered = hmm_v3.restore_brief_turnovers(
+                labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps, tight_contact=True)
+            log(f"[E] {n_recovered} brief turnovers restored from close contact")
+            labels, n_repeated = hmm_v3.restore_repeated_contact_turnovers(
+                labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps)
+            log(f"[E] {n_repeated} brief turnovers restored from repeated contact")
+        labels, n_delayed_switches = hmm_v3.delay_switches_during_contact(
+            labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps)
+        log(f"[E] {n_delayed_switches} switches delayed by continuing contact")
+        labels, n_merged_before_stops = hmm_v3.merge_unsupported_turnovers_before_stops(
+            labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps)
+        log(f"[E] {n_merged_before_stops} unsupported turnovers before stoppages merged")
+        labels, n_contested = hmm_v3.merge_contested_reversals(
+            labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps)
+        log(f"[E] {n_contested} brief reversals merged by continuing contact")
+        labels, n_restored_before_stops = hmm_v3.restore_turnovers_before_stops(
+            labels, p_ha, px, py, team_mat, bx_t, by_t, hybrid_info["stretches"], P.fps)
+        log(f"[E] {n_restored_before_stops} brief turnovers recovered before stoppages")
+        close_contact = hmm_v3._ball_contact_team(px, py, team_mat, bx_t, by_t, 0.8, 0.4, round(0.12 * P.fps))
+        labels, n_weak_at_stops = hmm_v3.merge_weak_possession_at_stops(labels, p_ha, close_contact, P.fps)
+        log(f"[E] {n_weak_at_stops} weak possessions adjacent to stoppages merged")
+        labels, n_paired = hmm_v3.anchor_switches_to_paired_contacts(
+            labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps)
+        log(f"[E] {n_paired} switches aligned to consecutive contact from both teams")
+        labels, n_unseen_start = hmm_v3.restore_turnovers_with_unseen_start(
+            labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps)
+        log(f"[E] {n_unseen_start} brief turnovers recovered with an unseen start")
+        n_trimmed = 0
+        if getattr(P, "trim_low_prob_stop_starts", True):
+            labels, n_trimmed = dead_situation.trim_low_probability_stop_starts(
+                labels, p_dead, hybrid_info["stretches"], P.fps)
+        log(f"[D2] {n_trimmed} low-confidence stoppage starts delayed")
+        labels, n_extended_ends = hmm_v3.extend_brief_turnover_ends(
+            labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps)
+        log(f"[E] {n_extended_ends} brief turnovers extended before the regain")
+        labels, n_departure = hmm_v3.advance_switches_after_ball_departure(
+            labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps)
+        log(f"[E] {n_departure} switches advanced after ball departure")
+        labels, n_arrival = hmm_v3.delay_switches_until_ball_arrival(
+            labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps)
+        log(f"[E] {n_arrival} switches delayed until ball arrival")
+        labels, n_longer_ends = hmm_v3.extend_brief_turnover_ends(
+            labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps, longer=True)
+        log(f"[E] {n_longer_ends} turnovers of up to six seconds extended before the regain")
+        labels, n_earlier_starts = hmm_v3.extend_brief_turnover_ends(
+            labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps, earlier=True)
+        log(f"[E] {n_earlier_starts} brief turnovers extended at the start")
+        if P.restore_brief_turnovers:
+            labels, n_extended = hmm_v3.restore_repeated_contact_turnovers(
+                labels, p_ha, px, py, team_mat, bx_t, by_t, P.fps, extended=True)
+            log(f"[E] {n_extended} longer turnovers restored from repeated contact")
     data.write_submission(args.out, labels)
     log(f"wrote {args.out}")
     summ = postprocess.summary(labels, blocks, P.fps)

@@ -209,6 +209,84 @@ def _kickoff_tags(tags):
     return sorted(ko), sorted(goals)
 
 
+def recover_short_ball_out(mask, bx, by, blocks, tags, pitch, fps):
+    """Fill a short unmarked stoppage when a trusted exit and a restart tag agree."""
+    length, width = pitch
+    outside = (bx < -0.35) | (bx > length + 0.35) | (by < -0.35) | (by > width + 0.35)
+    inside = (bx >= 0) & (bx <= length) & (by >= 0) & (by <= width)
+    restart_frames = sorted(tag["start"] for tag in tags if tag["code"] == "SET PIECES")
+    recovered = 0
+    for _, first, last in blocks:
+        for a, b in _runs(outside[first:last + 1]):
+            a, b = a + first, b + first
+            if b - a < round(0.16 * fps) or a - fps < first or b + fps > last:
+                continue
+            if mask[a - fps:b + fps].any() or not inside[a - fps:a].any():
+                continue
+            returns = np.flatnonzero(inside[b:min(last + 1, b + 2 * fps)])
+            if not len(returns):
+                continue
+            end = b + returns[0]
+            if not 1.6 * fps <= end - a <= 4 * fps or mask[a:end].any():
+                continue
+            i = np.searchsorted(restart_frames, a - fps)
+            if i < len(restart_frames) and restart_frames[i] <= end + 2 * fps:
+                mask[a:end] = True
+                recovered += 1
+    return recovered
+
+
+
+def delay_stops_during_control(mask, forced, blocks, p_home, contact, moving, search_s, fps):
+    """Keep the start of a tentative stoppage live while prior-team control continues."""
+    window = round(search_s * fps)
+    if window <= 0:
+        return 0
+    lookback = max(1, round(0.4 * fps))
+    minimum = max(1, round(0.24 * fps))
+    latest_start = round(0.16 * fps)
+    delayed = 0
+    for _, first, last in blocks:
+        for start, stop in _runs(mask[first:last + 1]):
+            start, stop = first + start, first + stop
+            if start == first or stop > last or forced[start:stop].any():
+                continue
+            end = min(stop - 2 * fps, start + window)
+            if end - start < minimum:
+                continue
+            prior = int(p_home[max(first, start - lookback):start].mean() < 0.5)
+            team_probability = p_home[start:end] if prior == 0 else 1 - p_home[start:end]
+            for a, b in _runs(contact[start:end] == prior):
+                if a > latest_start or b - a < minimum:
+                    continue
+                if team_probability[a:b].mean() >= 0.6 and moving[start + a:start + b].any():
+                    mask[start:start + b] = False
+                    delayed += 1
+                    break
+    return delayed
+
+
+
+def _refine_restart_ends(mask, blocks, forced, cols, settings):
+    """End non-forced stops at a nearby onset of sustained in-pitch ball movement."""
+    window = round(settings.get("restart_motion_lookback_s", 0) * FPS)
+    if window <= 0 or "ball_moving" not in cols or "ball_out" not in cols:
+        return
+    minimum_motion = round(settings.get("restart_motion_hold_s", 0.3) * FPS)
+    moving = (cols["ball_moving"] > 0) & (cols["ball_out"] == 0)
+    onsets = np.asarray([a for a, b in _runs(moving) if b - a >= minimum_motion], dtype=int)
+    minimum_stop = round(settings["min_d_s"] * FPS)
+    for _, a, b in blocks:
+        for start, end in _runs(mask[a:b + 1]):
+            start, end = a + start, a + end
+            if end > b or forced[start:end].any():
+                continue
+            i = np.searchsorted(onsets, end, side="left") - 1
+            if i >= 0 and onsets[i] >= max(start + minimum_stop, end - window):
+                mask[onsets[i]:end] = False
+
+
+
 def detect_hybrid(cols, blocks, cfg, tags=None, ko_events=None):
     """Core (e.g. the v2 D model) says WHERE play is stopped; the start and end are then searched around
     it with the situation signs; finally the 3-second rule.
@@ -474,6 +552,7 @@ def detect_hybrid(cols, blocks, cfg, tags=None, ko_events=None):
         changed[ch2 == -1] = -1
         mask = m2
     mask |= forced
+    _refine_restart_ends(mask, blocks, forced, cols, st)
     for s, e in _runs(changed == 1):
         sit_of[s:e] = sit_of[s - 1] if s > 0 else -1
     sit_of[~mask] = -1
@@ -482,3 +561,23 @@ def detect_hybrid(cols, blocks, cfg, tags=None, ko_events=None):
             "changed": changed, "veto": veto, "vetoed": vetoed, "veto_masks": veto_masks, "forced": forced,
             "skipped_special": skipped}
     return mask, stretches, dropped, info
+
+def trim_low_probability_stop_starts(labels, p_dead, stretches, fps=25):
+    """Keep the previous team briefly at low-confidence stoppage onsets."""
+    cuts = np.r_[0, np.flatnonzero(labels[1:] != labels[:-1]) + 1, len(labels)]
+    corrected = labels.copy()
+    count = 0
+    for left, start, end in zip(cuts, cuts[1:], cuts[2:-1]):
+        if labels[start] != "D" or labels[left] not in ("H", "A") or labels[end] not in ("H", "A"):
+            continue
+        if any(s.get("special") and s["start"] < end and s["end"] > start for s in stretches):
+            continue
+        limit = min(end - round(2 * fps), start + round(0.48 * fps))
+        if limit <= start:
+            continue
+        failed = np.flatnonzero(~(p_dead[start:limit] <= 0.65))
+        length = int(failed[0]) if failed.size else limit - start
+        if length >= max(1, round(0.12 * fps)):
+            corrected[start:start + length] = labels[left]
+            count += 1
+    return corrected, count

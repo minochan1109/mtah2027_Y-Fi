@@ -12,6 +12,10 @@ class Params3(Params2):
     # ---- [D] the play-stopped model (its P(dead) is the "core" of the hybrid detector) ----------
     dead_ball_motion: bool = False       # False: never use how the ball moves (speed, in flight, still)
     dead_set_piece_tags: bool = False    # False: ignore the SET PIECES tags (goal tags are kept)
+    dead_external: bool = True           # True: P(dead) learned from other games' true D (--team-train files
+                                         # + their *_dead.npz) instead of this game's pseudo labels
+    dead_train_unseen_s: float = 3.0     # >0: in those training labels, play with the answer's ball unknown
+                                         # this long = D (event-data answers miss some stoppages)
 
     # ---- [D] H/A team model trained on other games' answer keys (team_external.py, --team-train) ---
     # chosen on the external EVAL games only (leave-one-game-out), never on the provided game
@@ -20,15 +24,48 @@ class Params3(Params2):
         n_estimators=1200, learning_rate=0.03, num_leaves=31, min_child_samples=200,
         subsample=0.8, subsample_freq=1, colsample_bytree=0.8, verbose=-1,
         random_state=0, deterministic=True, force_row_wise=True))   # same file on every run
-    team_lasttouch: bool = True          # add "which team controlled the ball last" features
+    team_seeds: int = 5                  # average P(home) of random seeds 0..4 (one seed alone moves spellF1
+                                         # by about 0.01 on EVAL; 1 = a single model with random_state above)
+    team_lasttouch: bool = True         # add "which team controlled the ball last" features
+    team_self_train_conf: float = 0.0    # >0: retrain adding this game's frames with P >= this (no answers used)
+    team_self_train_weight: float = 0.5  # ... at this weight
+    team_blend_pseudo: float = 0.0       # >0: blend with this game's pseudo-label model (version 2) at this weight
+    team_nexttouch: bool = False        # ... and "which team controls the ball next" (needs team npz built with it)
     lt_dist_m: float = 1.5               # control: a player this close to the ball ...
     lt_opp_m: float = 1.0                # ... the nearest opponent at least this far ...
     lt_min_s: float = 0.2                # ... for at least this long
     lt_cap_s: float = 20.0               # "seconds since the last control" is capped here
+    team_smooth_s: float = 0.5           # P(home) of the team model averaged over this window (centred; 0 = off)
+    team_smooth_unseen_s: float = 0.64   # longer centered window without trusted ball tracking
+                                         # (EVAL, leave-one-game-out: one-frame flips stop splitting possessions)
 
     # ---- [E] H/A ----------------------------------------------------------------------------------
     home_calib_a: float = 1.0            # P(home) calibration sigmoid(a * logit(p) + b); 1 / 0 = off
     home_calib_b: float = 0.0
+    restart_team_delay_s: float = 2.0   # delay only the restarting team's H/A evidence
+    cost_switch_team: float = 13.0      # H <-> A switch cost in play before recovery evidence
+    switch_signal_mid: float = 0.8      # recovery onset at the midpoint of the switch signal
+    switch_signal_drop: float = 0.75    # maximum fractional discount when recovery is clear
+    unseen_ball_switch_cost_scale: float = 1.5  # keep the last team when the ball position is unreliable
+    ball_flight_switch_cost_scale: float = 1.25  # keep possession through tracked ball flight
+    ball_flight_switch_tail_s: float = 0.12     # continue the flight penalty for this long
+    switch_model: bool = False           # True: the switch signal = P(switch) learned from other games (--team-train)
+    switch_model_win_s: float = 0.4      # "switch moment" = within this long of a true H<->A switch
+    switch_model_scale: float = 2.0      # signal = min(1, scale * P(switch))
+    switch_evidence_max_s: float = 1.6   # a possession this short or shorter ... (0 = off)
+    switch_evidence_m: float = 0.75      # ... in which no player of that team is ever this close to the (trusted)
+                                         # ball, nearer than every opponent, is not a possession: the team before
+                                         # it keeps the ball (a switch needs a touch; fixes switches while the ball
+                                         # is in flight / loose)
+    turnover_backtrack_s: float = 2.5    # look for sustained control before a predicted switch
+    turnover_control_s: float = 0.4     # require continuous ball proximity for at least this long
+    restore_brief_turnovers: bool = True  # recover short possessions bracketed by ball control
+    turnover_slowdown_backtrack_s: float = 1.4  # look for a slowdown before a predicted switch
+    turnover_redirect_search_s: float = 0.16  # look for a redirection after a predicted switch
+    weak_turnover_merge_s: float = 4.0  # bridge unsupported reversals of at most this duration
+    recover_short_ball_out: bool = True  # restore short ball-out stops corroborated by a restart tag
+    stop_control_search_s: float = 0.6  # delay a stoppage onset when control continues
+    sustained_contact_log_odds: float = 0.0   # weak H/A decoding vote for sustained ball control (0 = off: +0.0003 on EVAL)
     goal_lead_s: float = 0.0             # this long before every GOALS tag = the scoring team's possession (0 = off)
                                          # (a goal comes from the scoring team's shot; if used, 2 s: on EVAL it has
                                          #  the fewest wrong frames of 0.5-4 s, spellF1 0.6146 vs 0.6151 off)

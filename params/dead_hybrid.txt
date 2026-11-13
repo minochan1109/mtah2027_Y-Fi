@@ -11,15 +11,17 @@
 [settings]
 need = 2                  # 確認・終了サインは5つのうちいくつ / of the 5 confirm / end signs
 core_need = 1             # 芯のサインはいくつ満たせばよいか / how many core signs must hold
-core_min_s = 2            # 芯はこれ以上続くこと / the core must last this long
+core_min_s = 1.25         # 芯はこれ以上続くこと / the core must last this long
 core_merge_s = 1          # 芯の間のすき間がこれ未満ならつなぐ / join cores closer than this
 classify_s = 6            # 状況を決めるために見る最短の時間 / at least this long is used to decide the situation
 classify_min = 0.25       # これ未満なら「不明」/ below this share the situation is "unknown"
-start_search_s = 10       # 芯の前、始まりを探す範囲 / look for the start this far before the core
+start_search_s = 5        # 芯の前、始まりを探す範囲 / look for the start this far before the core
 end_search_before_s = 1   # 芯の終わりの何秒前から終わりを探すか / look for the end from this long before the core end ...
-end_search_after_s = 1    # 芯の終わりの何秒後まで探すか（なければ芯の終わり）/ ... to this long after it (else: core end)
-end_hold_s = 0.3          # 終了サインが続く時間 / end signs must hold this long
-end_back_s = 0.5          # D の終わりをこれだけ前にずらす / the D ends this much earlier
+end_search_after_s = 0.5  # 芯の終わりの何秒後まで探すか（なければ芯の終わり）/ ... to this long after it (else: core end)
+end_hold_s = 0.5          # 終了サインが続く時間 / end signs must hold this long
+end_back_s = 0.25         # D の終わりをこれだけ前にずらす / the D ends this much earlier
+restart_motion_lookback_s = 0.5  # 再開候補の直前で、ボールが動き始めた時点を探す / look back from the estimated restart
+restart_motion_hold_s = 0.3      # ピッチ内でボールの動きが続く時間 / minimum sustained in-pitch ball movement
 min_d_s = 3               # 3秒ルール: これ未満の停止はプレー中に戻す / shorter D -> play
 min_play_s = 3            # 3秒ルール: これ未満のプレー中は停止につなぐ / shorter play -> joined to D
 require_share = 0.5       # require / must: この割合以上で成り立てばよい / must hold in this share ...
@@ -40,16 +42,16 @@ goal_team_fast_s = 0      # ... この秒数以上速く走る」ことがない
 fallback_unknown = 0      # 1: 最低時間に足りないとき「不明」として残す / 0: 他に合う状況がなければ停止にしない
 
 [core | 芯（間違いなく止まっている）]   # core_need 個以上で芯 / core when core_need of these hold
-sign = 現在の D モデルの P(dead) が高い | P(dead) of the current D model is high | p_dead >= 0.7
+sign = 現在の D モデルの P(dead) が高い | P(dead) of the current D model is high | p_dead >= 0.3
 sign = ボールが見えていて、10秒間「両チームとも1人以上がボールに近づく」ことがない | ball seen and for 10 s not both teams have a player coming for it | lasting(ball_fresh > 0 and not (n_approach_home >= 1 and n_approach_away >= 1), 10)
 
 [play | プレー中のサイン（これがあれば芯にも D にもしない）]
-sign = キーパーが自分の PA でボールを持っている（パントキックの前など、持ってから2秒間）| a keeper inside his box has the ball (e.g. before a punt; for 2 s after) | recent(keeper_ball > 0, 2)
+sign = キーパーが自分の PA でボールを持っている（パントキックの前など、持ってから1秒間）| a keeper inside his box has the ball (e.g. before a punt; for 1 s after) | recent(keeper_ball > 0, 1)
 sign = 両チームとも1人以上がダッシュしている（0.5秒）| both teams have a player dashing (0.5 s) | lasting(n_dash_home >= 1 and n_dash_away >= 1, 0.5)
 
 [start | 始まりを探す]
 event = ボールの位置がピッチの外に出た | the ball position went outside the pitch | ball_out > 0
-back_to = 最後に2人以上が速く走っていた時点 | last moment 2+ players ran fast | n_fast >= 2
+back_to = 2人以上が0.2秒以上続けて速く走っていた最後の時点 | last moment with 2+ players running fast for 0.2 s | lasting(n_fast >= 2, 0.2)
 
 [situation スローイン | throw-in]
 min_s = 3      # これより短い停止はこの状況とみなさない / shorter -> not this situation

@@ -118,8 +118,9 @@ def tag_evidence(tags, side_of, n_frames, P):
             since_restart[after] = np.minimum(since_restart[after], (t[after] - s) / fps)
             tw = max(wt for _, wt in use)
             if side is not None and tw > 0:
-                k = min(n_frames, s + int(RESTART_TEAM_S * fps))
-                logit[s:k] += tw if side == 0 else -tw
+                start = max(0, s + round(getattr(P, "restart_team_delay_s", 0.0) * fps))
+                end = min(n_frames, start + int(RESTART_TEAM_S * fps))
+                logit[start:end] += tw if side == 0 else -tw
         elif role == "goal":
             rep["goal"] += 1
             after = t >= s
