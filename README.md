@@ -31,6 +31,8 @@
 | `tools/convert_metrica.py` | 検証 | Metrica の公開サンプル試合（他の試合・ラベル付き）を同じ形式に変換し、正解 `gt.csv` も作る |
 | `tools/overlay_video.py` | 確認 | 戦術カメラ映像に選手の枠・ボール・推定ラベル（外枠の色）を重ねた動画を作る |
 | `tools/compare_external.py` | 検証 | v1 / v2 / 設定ファイルごとに、他の試合の spellF1 を表にする |
+| `tools/epts_to_metrica_csv.py` | 検証 | Metrica の Sample_Game_3（EPTS 形式）を Sample_Game_1/2 と同じ CSV に変換する（EVAL-G3 を作る前に使う） |
+| `tools/score_eval3.py` | 検証 | v3 を EVAL-G1 / G2 / G3 で同時に動かして spellF1 を出す（G3 は学習に使わない） |
 | `tools/plot_timeline.py` | 確認 | 指定した時間帯の推定結果・確率・疑似ラベルを図にする（映像と見比べる用） |
 | `tests/synthetic.py` | テスト | 本物と同じ形式の合成データを作る（実データなしで動作確認するため） |
 | `tests/test_smoke.py` | テスト | 合成データでパイプライン全体が動くかを確認 |
@@ -133,6 +135,20 @@ Metrica の公開サンプル試合から、「本番に似せた使用データ
 git clone https://github.com/metrica-sports/sample-data.git ../sample-data
 python tools/make_eval_data.py --src ../sample-data/data/Sample_Game_1 --out external/EVAL-G1
 python tools/make_eval_data.py --src ../sample-data/data/Sample_Game_2 --out external/EVAL-G2 --seed 1
+```
+
+Game 3（EVAL-G3）は形式が違う（FIFA EPTS）ので、先に CSV に変換してから同じように作る。手元の EVAL-G3 とまったく同じファイルになることを確認済み。
+
+```bash
+python tools/epts_to_metrica_csv.py ../sample-data/data/Sample_Game_3 ../sample-data/data/Sample_Game_3_csv
+python tools/make_eval_data.py --src ../sample-data/data/Sample_Game_3_csv --out external/EVAL-G3 --seed 2 --stem EVAL-G3
+```
+
+v3 を 3 試合で測る（チームモデル・D モデルは `results/team_feat/` の G1・G2 だけで学習。G3 は学習に使わず点数を測るだけ）。
+
+```bash
+python tools/score_eval3.py --repo ../more-than-a-hack-2027
+# EVAL-G1: spellF1 = ...  /  EVAL-G2: ...  /  EVAL-G3: ...（結果は results/eval3/）
 ```
 
 | フォルダ | 中身 |
