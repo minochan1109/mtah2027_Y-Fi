@@ -1,0 +1,6 @@
+# Python 3.11 (checked with 3.11.18). Exact versions used to make the submission.
+numpy==2.4.6
+pandas==2.2.3
+scipy==1.17.1
+scikit-learn==1.9.1
+lightgbm==4.7.0
