@@ -32,6 +32,7 @@
 | `tools/overlay_video.py` | 確認 | 戦術カメラ映像に選手の枠・ボール・推定ラベル（外枠の色）を重ねた動画を作る |
 | `tools/compare_external.py` | 検証 | v1 / v2 / 設定ファイルごとに、他の試合の spellF1 を表にする |
 | `tools/epts_to_metrica_csv.py` | 検証 | Metrica の Sample_Game_3（EPTS 形式）を Sample_Game_1/2 と同じ CSV に変換する（EVAL-G3 を作る前に使う） |
+| `tools/build_team_feat.py` | 学習データ | 公開サンプル試合から EVAL-G1〜G3 と v3 の学習用ファイル（`results/team_feat/*.npz`）を作り直す |
 | `tools/score_eval3.py` | 検証 | v3 を EVAL-G1 / G2 / G3 で同時に動かして spellF1 を出す（G3 は学習に使わない） |
 | `tools/plot_timeline.py` | 確認 | 指定した時間帯の推定結果・確率・疑似ラベルを図にする（映像と見比べる用） |
 | `tests/synthetic.py` | テスト | 本物と同じ形式の合成データを作る（実データなしで動作確認するため） |
@@ -85,10 +86,19 @@ python ../more-than-a-hack-2027/evaluation/validate_submission.py results/team.c
 1つのコマンドで、選手の誤検出の除去 → ボールの信頼度 → タグの整理 → プレー停止の判定（組み合わせ版）
 → 保持チームの確率 → 時系列による整列（H/A）→ 提出用 CSV まで出る。初期値が決定版なので `--params` は要らない。
 
+H/A のチームモデルと D モデルは、**他の試合（Metrica の公開サンプル試合）の正解だけ**で学習する。
+その学習用ファイル（`results/team_feat/*.npz`）はリポジトリに入れず、最初に1回だけ作る（約2分。毎回まったく同じファイルになる）。
+
 ```bash
-python -m possession.v3.pipeline_v3 --repo ../more-than-a-hack-2027 --out results/final/submission.csv --report results/final/report.txt
+git clone https://github.com/metrica-sports/sample-data.git ../sample-data
+python tools/build_team_feat.py --repo ../more-than-a-hack-2027
+python -m possession.v3.pipeline_v3 --repo ../more-than-a-hack-2027 --out results/final/submission.csv --report results/final/report.txt \
+    --team-train results/team_feat/EVAL-G1.npz results/team_feat/EVAL-G2.npz
 python ../more-than-a-hack-2027/evaluation/validate_submission.py results/final/submission.csv
 ```
+
+`tools/build_team_feat.py` は `external/EVAL-G1〜G3`（下の「評価用データを作る」と同じ手順）と、
+G1・G2 の特徴量と正解（`results/team_feat/EVAL-G1.npz`、`EVAL-G1_dead.npz` ほか）を作る。配布された試合のデータは使わない。
 
 | ファイル | 内容 |
 |---|---|
@@ -145,8 +155,10 @@ python tools/make_eval_data.py --src ../sample-data/data/Sample_Game_3_csv --out
 ```
 
 v3 を 3 試合で測る（チームモデル・D モデルは `results/team_feat/` の G1・G2 だけで学習。G3 は学習に使わず点数を測るだけ）。
+上の手順は `tools/build_team_feat.py` がまとめて実行する。
 
 ```bash
+python tools/build_team_feat.py --repo ../more-than-a-hack-2027
 python tools/score_eval3.py --repo ../more-than-a-hack-2027
 # EVAL-G1: spellF1 = ...  /  EVAL-G2: ...  /  EVAL-G3: ...（結果は results/eval3/）
 ```

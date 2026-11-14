@@ -30,7 +30,7 @@ def main():
     train = [os.path.join("results", "team_feat", f"EVAL-G{g}.npz") for g in (1, 2)]
     for f in train:
         if not os.path.isfile(os.path.join(ROOT, f)):
-            sys.exit(f"missing {f} (git pull したか確認)")
+            sys.exit(f"missing {f} (先に python tools/build_team_feat.py --repo {a.repo} を実行)")
     os.makedirs(os.path.join(ROOT, a.out), exist_ok=True)
     env = dict(os.environ, PYTHONUTF8="1")
     procs = []
