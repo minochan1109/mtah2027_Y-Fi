@@ -559,6 +559,29 @@ def run(args):
                         continue
                     labels[c:d] = labels[a - 1]; n_ro += 1
             log(f"[R] {n_ro} stoppage middles with players running reopened as play")
+        ren = getattr(P, "run_edge_n", 0.0)
+        if ren > 0:
+            # the start / end of a stoppage where many players are still running is play:
+            # the start goes to the team before the stoppage, the end to the team after it
+            kk = max(1, int(0.48 * P.fps))
+            with np.errstate(invalid="ignore"):
+                vv = np.hypot(px[kk:] - px[:-kk], py[kk:] - py[:-kk]) / (kk / P.fps)
+                nrun = np.r_[np.sum(vv > P.run_reopen_speed, 1), np.zeros(kk)].astype(float)
+            w = max(1, int(P.run_edge_win_s * P.fps))
+            nr_w = pd.Series(nrun[:n]).rolling(w, center=True, min_periods=1).mean().to_numpy()
+            pd_w = pd.Series(p_dead).rolling(w, center=True, min_periods=1).mean().to_numpy()
+            edge_sig = (nr_w >= ren) & (pd_w <= P.run_edge_pdead)
+            n_re = 0
+            for a, b in preprocess.run_lengths(labels == "D"):
+                for c, d in preprocess.run_lengths(edge_sig[a:b]):
+                    c, d = a + c, a + d
+                    if d - c < P.run_edge_min_s * P.fps or (c == a and d == b):
+                        continue
+                    if c == a and a > 0 and labels[a - 1] in ("H", "A"):
+                        labels[c:d] = labels[a - 1]; n_re += 1
+                    elif d == b and b < n and labels[b] in ("H", "A"):
+                        labels[c:d] = labels[b]; n_re += 1
+            log(f"[R] {n_re} stoppage edges with players running reopened as play")
         tiny = getattr(P, "drop_tiny_s", 0.0)
         if tiny > 0:
             # a sub-second H/A spell between two spells of the other team is not a possession

@@ -47,7 +47,7 @@ class Params3(Params2):
     switch_signal_mid: float = 0.8      # recovery onset at the midpoint of the switch signal
     switch_signal_drop: float = 0.75    # maximum fractional discount when recovery is clear
     unseen_ball_switch_cost_scale: float = 1.5  # keep the last team when the ball position is unreliable
-    ball_flight_switch_cost_scale: float = 1.25  # keep possession through tracked ball flight
+    ball_flight_switch_cost_scale: float = 1.0  # keep possession through tracked ball flight
     ball_flight_switch_tail_s: float = 0.12     # continue the flight penalty for this long
     final_drop_short_s: float = 1.0      # >0: last pass of drop_unsupported_spells with this length ...
     final_drop_touch_m: float = 1.5      # ... and this touch distance
@@ -68,6 +68,10 @@ class Params3(Params2):
     run_reopen_win_s: float = 4.0    # window for the running count and the D prob
     run_reopen_pdead: float = 0.5    # ... with the mean D prob at most this
     run_reopen_min_s: float = 2.0    # ... lasting at least this long
+    run_edge_n: float = 2.5          # >0: the same at the start / end of a D (players running, mean count) ...
+    run_edge_win_s: float = 4.0      # ... over this window ...
+    run_edge_pdead: float = 0.8      # ... with the mean D prob at most this ...
+    run_edge_min_s: float = 1.0      # ... lasting at least this long
     drop_tiny_s: float = 0.5         # >0: H/A spells shorter than this between the other team's spells -> that team
     sandwich_d_s: float = 15.0       # >0: H/A spell shorter than this between two D stretches ...
     sandwich_d_conf: float = 0.5     # ... not backed by the team model (mean prob <= this) -> D
@@ -89,7 +93,7 @@ class Params3(Params2):
     restore_brief_turnovers: bool = True  # recover short possessions bracketed by ball control
     turnover_slowdown_backtrack_s: float = 1.4  # look for a slowdown before a predicted switch
     turnover_redirect_search_s: float = 0.16  # look for a redirection after a predicted switch
-    weak_turnover_merge_s: float = 4.0  # bridge unsupported reversals of at most this duration
+    weak_turnover_merge_s: float = 1.5  # bridge unsupported reversals of at most this duration
     recover_short_ball_out: bool = True  # restore short ball-out stops corroborated by a restart tag
     stop_control_search_s: float = 0.6  # delay a stoppage onset when control continues
     sustained_contact_log_odds: float = 0.0   # weak H/A decoding vote for sustained ball control (0 = off: +0.0003 on EVAL)
